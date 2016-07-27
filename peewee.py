@@ -1979,7 +1979,7 @@ class QueryCompiler(object):
         meta = model._meta
         alias_map = self.alias_map_class()
         alias_map.add(model, model._meta.db_table)
-        if query._upsert:
+        if query._upsert and meta.database.upsert_sql:
             statement = meta.database.upsert_sql
         elif query._on_conflict:
             statement = 'INSERT OR %s INTO' % query._on_conflict
@@ -2021,6 +2021,24 @@ class QueryCompiler(object):
                 # Bare insert, use default value for primary key.
                 clauses.append(query.database.default_insert_clause(
                     query.model_class))
+
+        if query._upsert and isinstance(meta.database, PostgresqlDatabase):
+            update = []
+            for field in fields:
+                if not field.primary_key:
+                    update.append(Expression(
+                        field,
+                        OP.EQ,
+                        Entity('EXCLUDED', field.db_column),
+                        flat=True))
+
+            pk = meta.primary_key.db_column
+            if update:
+                clauses.extend((
+                    SQL('ON CONFLICT (%s) DO UPDATE SET' % pk),
+                    CommaClause(*update)))
+            else:
+                clauses.append(SQL('ON CONFLICT (%s) DO NOTHING' % pk))
 
         if query.is_insert_returning:
             clauses.extend([
