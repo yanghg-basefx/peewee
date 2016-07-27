@@ -2027,18 +2027,21 @@ class QueryCompiler(object):
             for field in fields:
                 if not field.primary_key:
                     update.append(Expression(
-                        field,
+                        field.as_entity(with_table=False),
                         OP.EQ,
-                        Entity('EXCLUDED', field.db_column),
+                        SQL('EXCLUDED."%s"' % field.db_column),
                         flat=True))
 
             pk = meta.primary_key.db_column
             if update:
                 clauses.extend((
-                    SQL('ON CONFLICT (%s) DO UPDATE SET' % pk),
+                    Clause(
+                        SQL('ON CONFLICT'),
+                        EnclosedClause(SQL('name')),
+                        SQL('DO UPDATE SET')),
                     CommaClause(*update)))
             else:
-                clauses.append(SQL('ON CONFLICT (%s) DO NOTHING' % pk))
+                clauses.append(SQL('ON CONFLICT DO NOTHING'))
 
         if query.is_insert_returning:
             clauses.extend([

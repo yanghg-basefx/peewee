@@ -318,6 +318,26 @@ class TestQueryingModels(ModelTestCase):
         self.assertEqual(len(blogs), 6)
 
 
+class TestUpsert(ModelTestCase):
+    requires = [UniqueMultiField]
+
+    def test_upsert(self):
+        charlie = UniqueMultiField.create(name='charlie')
+        huey = UniqueMultiField.create(name='huey', field_a='kitty')
+
+        def integrity_error():
+            with test_db.atomic():
+                UniqueMultiField.create(name='charlie')
+        self.assertRaises(IntegrityError, integrity_error)
+
+        uq = (UniqueMultiField
+              .insert(name='charlie', field_a='nuggie')
+              .upsert())
+        res = uq.execute()
+
+        db_obj = UniqueMultiField.get(UniqueMultiField.name == 'charlie')
+
+
 class TestInsertEmptyModel(ModelTestCase):
     requires = [EmptyModel, NoPKModel]
 
