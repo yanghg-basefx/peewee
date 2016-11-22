@@ -1166,10 +1166,20 @@ class UUIDField(Field):
             return value
         return None if value is None else uuid.UUID(value)
 
-def _date_part(date_part):
-    def dec(self):
-        return self.model_class._meta.database.extract_date(date_part, self)
-    return dec
+class FieldProperty(object):
+    def __init__(self, attr, impl):
+        self.attr = attr
+        self.impl = impl
+    def __get__(self, instance, instance_type=None):
+        if instance is not None:
+            return self.impl(instance, self.attr)
+        return self
+
+def _date_part_inner(inst, date_part):
+    return inst.model_class._meta.database.extract_date(date_part, inst)
+
+def date_part(part):
+    return FieldProperty(part, _date_part_inner)
 
 class _BaseFormattedField(Field):
     formats = None
@@ -1196,12 +1206,12 @@ class DateTimeField(_BaseFormattedField):
             return format_date_time(value, self.formats)
         return value
 
-    year = property(_date_part('year'))
-    month = property(_date_part('month'))
-    day = property(_date_part('day'))
-    hour = property(_date_part('hour'))
-    minute = property(_date_part('minute'))
-    second = property(_date_part('second'))
+    year = date_part('year')
+    month = date_part('month')
+    day = date_part('day')
+    hour = date_part('hour')
+    minute = date_part('minute')
+    second = date_part('second')
 
 class DateField(_BaseFormattedField):
     db_field = 'date'
@@ -1219,9 +1229,9 @@ class DateField(_BaseFormattedField):
             return value.date()
         return value
 
-    year = property(_date_part('year'))
-    month = property(_date_part('month'))
-    day = property(_date_part('day'))
+    year = date_part('year')
+    month = date_part('month')
+    day = date_part('day')
 
 class TimeField(_BaseFormattedField):
     db_field = 'time'
@@ -1244,9 +1254,9 @@ class TimeField(_BaseFormattedField):
             return (datetime.datetime.min + value).time()
         return value
 
-    hour = property(_date_part('hour'))
-    minute = property(_date_part('minute'))
-    second = property(_date_part('second'))
+    hour = date_part('hour')
+    minute = date_part('minute')
+    second = date_part('second')
 
 class TimestampField(IntegerField):
     # Support second -> microsecond resolution.
@@ -4432,6 +4442,7 @@ class FieldProxy(Field):
         self._model_alias = alias
         self.model = self._model_alias.model_class
         self.field_instance = field_instance
+        self.field_class = type(field_instance)
 
     def clone_base(self):
         return FieldProxy(self._model_alias, self.field_instance)
@@ -4448,7 +4459,15 @@ class FieldProxy(Field):
     def __getattr__(self, attr):
         if attr == 'model_class':
             return self._model_alias
-        return getattr(self.field_instance, attr)
+        obj = getattr(self.field_instance, attr)
+        try:
+            type_obj = getattr(self.field_class, attr)
+        except AttributeError:
+            pass
+        else:
+            if isinstance(type_obj, FieldProperty):
+                return type_obj.impl(self, attr)
+        return obj
 
 class ModelAlias(object):
     def __init__(self, model_class):

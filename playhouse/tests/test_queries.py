@@ -814,6 +814,51 @@ class TestSelectQuery(PeeweeTestCase):
             'WHERE (("t1"."username" = ?) AND ("t2"."id" = ?))'))
         self.assertEqual(params, ['charlie', 2])
 
+    def test_alias_properties(self):
+        class Timer(TestModel):
+            date_time = DateTimeField()
+            date = DateField()
+            time = TimeField()
+
+        query = Timer.select().where(
+            (Timer.date_time.year == 2015) &
+            (Timer.date.month == 7) &
+            (Timer.time.second == 3))
+        sql, params = normal_compiler.generate_select(query)
+        self.assertEqual(sql, (
+            'SELECT "t1"."id", "t1"."date_time", "t1"."date", "t1"."time" '
+            'FROM "timer" AS t1 WHERE ((('
+            'date_part(?, "t1"."date_time") = ?) AND '
+            '(date_part(?, "t1"."date") = ?)) AND '
+            '(date_part(?, "t1"."time") = ?))'))
+
+        Tdt = Timer.alias()
+        Td = Timer.alias()
+        Tt = Timer.alias()
+
+        query = (Timer
+                 .select()
+                 .where(
+                     (Tdt.date_time.year == 2015) &
+                     (Td.date.month == 7) &
+                     (Tt.time.second == 3))
+                 .join(Tdt, on=(Timer.id == Tdt.id))
+                 .join(Td, on=(Timer.id == Td.id))
+                 .join(Tt, on=(Timer.id == Tt.id)))
+        sql, params = normal_compiler.generate_select(query)
+        self.assertEqual(sql, (
+            'SELECT "t1"."id", "t1"."date_time", "t1"."date", "t1"."time" '
+            'FROM "timer" AS t1 '
+            'INNER JOIN "timer" AS t4 ON ("t1"."id" = "t4"."id") '
+            'INNER JOIN "timer" AS t2 ON ("t1"."id" = "t2"."id") '
+            'INNER JOIN "timer" AS t3 ON ("t1"."id" = "t3"."id") '
+            'WHERE ((('
+            'date_part(?, "t4"."date_time") = ?) AND '
+            '(date_part(?, "t2"."date") = ?)) AND '
+            '(date_part(?, "t3"."time") = ?))'))
+        self.assertEqual(params, ['year', 2015, 'month', 7, 'second', 3])
+
+
 class TestUpdateQuery(PeeweeTestCase):
     def setUp(self):
         super(TestUpdateQuery, self).setUp()
