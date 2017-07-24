@@ -48,11 +48,10 @@ Contents:
    peewee/quickstart
    peewee/example
    peewee/contributing
+   peewee/overview
+   peewee/sql_expressions
+   peewee/models_and_fields
    peewee/database
-   peewee/models
-   peewee/querying
-   peewee/transactions
-   peewee/playhouse
    peewee/api
 
 Note
