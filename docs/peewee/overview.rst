@@ -576,6 +576,3 @@ special ``IS NOT NULL`` and ``NOT IN`` operators:
 
 Query Evaluation
 ----------------
-
-Transactions
-------------
