@@ -7,14 +7,258 @@ https://github.com/coleifer/peewee/releases
 
 ## master
 
+* Add `Model.bulk_update()` method for bulk-updating fields across multiple
+  model instances.
+* Add support for window function frame exclusion and added built-in support
+  for the GROUPS frame type.
+* Add support for chaining window functions by extending a previously-declared
+  window function.
+* Bulk insert via ``insert_many()`` no longer require specification of the
+  fields argument when the inserted rows are lists/tuples. In that case, the
+  fields will be inferred to be all model fields except any auto-increment id.
+
+[View commits](https://github.com/coleifer/peewee/compare/3.9.3...master)
+
+## 3.9.3
+
+* Added cross-database support for `NULLS FIRST/LAST` when specifying the
+  ordering for a query. Previously this was only supported for Postgres. Peewee
+  will now generate an equivalent `CASE` statement for Sqlite and MySQL.
+* Added [EXCLUDED](http://docs.peewee-orm.com/en/latest/peewee/api.html#EXCLUDED)
+  helper for referring to the `EXCLUDED` namespace used with `INSERT...ON CONFLICT`
+  queries, when referencing values in the conflicting row data.
+* Added helper method to the model `Metadata` class for setting the table name
+  at run-time. Setting the `Model._meta.table_name` directly may have appeared
+  to work in some situations, but could lead to subtle bugs. The new API is
+  `Model._meta.set_table_name()`.
+* Enhanced helpers for working with Peewee interactively, [see doc](http://docs.peewee-orm.com/en/latest/peewee/interactive.html).
+* Fix cache invalidation bug in `DataSet` that was originally reported on the
+  sqlite-web project.
+* New example script implementing a [hexastore](https://github.com/coleifer/peewee/blob/master/examples/hexastore.py).
+
+[View commits](https://github.com/coleifer/peewee/compare/3.9.2...3.9.3)
+
+## 3.9.1 and 3.9.2
+
+Includes a bugfix for an `AttributeError` that occurs when using MySQL with the
+`MySQLdb` client. The 3.9.2 release includes fixes for a test failure.
+
+[View commits](https://github.com/coleifer/peewee/compare/3.9.0...3.9.2)
+
+## 3.9.0
+
+* Added new document describing how to [use peewee interactively](http://docs.peewee-orm.com/en/latest/peewee/interactive.html).
+* Added convenience functions for generating model classes from a pre-existing
+  database, printing model definitions and printing CREATE TABLE sql for a
+  model. See the "use peewee interactively" section for details.
+* Added a `__str__` implementation to all `Query` subclasses which converts the
+  query to a string and interpolates the parameters.
+* Improvements to `sqlite_ext.JSONField` regarding the serialization of data,
+  as well as the addition of options to override the JSON serialization and
+  de-serialization functions.
+* Added `index_type` parameter to `Field`
+* Added `DatabaseProxy`, which allows one to use database-specific decorators
+  with an uninitialized `Proxy` object. See #1842 for discussion. Recommend
+  that you update any usage of `Proxy` for deferring database initialization to
+  use the new `DatabaseProxy` class instead.
+* Added support for `INSERT ... ON CONFLICT` when the conflict target is a
+  partial index (e.g., contains a `WHERE` clause). The `OnConflict` and
+  `on_conflict()` APIs now take an additional `conflict_where` parameter to
+  represent the `WHERE` clause of the partial index in question. See #1860.
+* Enhanced the `playhouse.kv` extension to use efficient upsert for *all*
+  database engines. Previously upsert was only supported for sqlite and mysql.
+* Re-added the `orwhere()` query filtering method, which will append the given
+  expressions using `OR` instead of `AND`. See #391 for old discussion.
+* Added some new examples to the ``examples/`` directory
+* Added `select_from()` API for wrapping a query and selecting one or more
+  columns from the wrapped subquery. [Docs](http://docs.peewee-orm.com/en/latest/peewee/api.html#SelectQuery.select_from).
+* Added documentation on using [row values](http://docs.peewee-orm.com/en/latest/peewee/query_operators.html#row-values).
+* Removed the (defunct) "speedups" C extension, which as of 3.8.2 only
+  contained a barely-faster function for quoting entities.
+
+**Bugfixes**
+
+* Fix bug in SQL generation when there was a subquery that used a common table
+  expressions.
+* Enhanced `prefetch()` and fixed bug that could occur when mixing
+  self-referential foreign-keys and model aliases.
+* MariaDB 10.3.3 introduces backwards-incompatible changes to the SQL used for
+  upsert. Peewee now introspects the MySQL server version at connection time to
+  ensure proper handling of version-specific features. See #1834 for details.
+* Fixed bug where `TimestampField` would treat zero values as `None` when
+  reading from the database.
+
+[View commits](https://github.com/coleifer/peewee/compare/3.8.2...3.9.0)
+
+## 3.8.2
+
+**Backwards-incompatible changes**
+
+* The default row-type for `INSERT` queries executed with a non-default
+  `RETURNING` clause has changed from `tuple` to `Model` instances. This makes
+  `INSERT` behavior consistent with `UPDATE` and `DELETE` queries that specify
+  a `RETURNING` clause. To revert back to the old behavior, just append a call
+  to `.tuples()` to your `INSERT ... RETURNING` query.
+* Removing support for the `table_alias` model `Meta` option. Previously, this
+  attribute could be used to specify a "vanity" alias for a model class in the
+  generated SQL. As a result of some changes to support more robust UPDATE and
+  DELETE queries, supporting this feature will require some re-working. As of
+  the 3.8.0 release, it was broken and resulted in incorrect SQL for UPDATE
+  queries, so now it is removed.
+
+**New features**
+
+* Added `playhouse.shortcuts.ReconnectMixin`, which can be used to implement
+  automatic reconnect under certain error conditions (notably the MySQL error
+  2006 - server has gone away).
+
+**Bugfixes**
+
+* Fix SQL generation bug when using an inline window function in the `ORDER BY`
+  clause of a query.
+* Fix possible zero-division in user-defined implementation of BM25 ranking
+  algorithm for SQLite full-text search.
+
+[View commits](https://github.com/coleifer/peewee/compare/3.8.1...3.8.2)
+
+## 3.8.1
+
+**New features**
+
+* Sqlite `SearchField` now supports the `match()` operator, allowing full-text
+  search to be performed on a single column (as opposed to the whole table).
+
+**Changes**
+
+* Remove minimum passphrase restrictions in SQLCipher integration.
+
+**Bugfixes**
+
+* Support inheritance of `ManyToManyField` instances.
+* Ensure operator overloads are invoked when generating filter expressions.
+* Fix incorrect scoring in Sqlite BM25, BM25f and Lucene ranking algorithms.
+* Support string field-names in data dictionary when performing an ON CONFLICT
+  ... UPDATE query, which allows field-specific conversions to be applied.
+  References #1815.
+
+[View commits](https://github.com/coleifer/peewee/compare/3.8.0...3.8.1)
+
+## 3.8.0
+
+**New features**
+
+* Postgres `BinaryJSONField` now supports `has_key()`, `concat()` and
+  `remove()` methods (though remove may require pg10+).
+* Add `python_value()` method to the SQL-function helper `fn`, to allow
+  specifying a custom function for mapping database values to Python values.
+
+**Changes**
+
+* Better support for UPDATE ... FROM queries, and more generally, more robust
+  support for UPDATE and RETURNING clauses. This means that the
+  `QualifiedNames` helper is no longer needed for certain types of queries.
+* The `SqlCipherDatabase` no longer accepts a `kdf_iter` parameter. To
+  configure the various SQLCipher encryption settings, specify the setting
+  values as `pragmas` when initializing the database.
+* Introspection will now, by default, only strip "_id" from introspected column
+  names if those columns are foreign-keys. See #1799 for discussion.
+* Allow `UUIDField` and `BinaryUUIDField` to accept hexadecimal UUID strings as
+  well as raw binary UUID bytestrings (in addition to `UUID` instances, which
+  are already supported).
+* Allow `ForeignKeyField` to be created without an index.
+* Allow multiple calls to `cast()` to be chained (#1795).
+* Add logic to ensure foreign-key constraint names that exceed 64 characters
+  are truncated using the same logic as is currently in place for long indexes.
+* `ManyToManyField` supports foreign-keys to fields other than primary-keys.
+* When linked against SQLite 3.26 or newer, support `SQLITE_CONSTRAINT` to
+  designate invalid queries against virtual tables.
+* SQL-generation changes to aid in supporting using queries within expressions
+  following the SELECT statement.
+
+**Bugfixes**
+
+* Fixed bug in `order_by_extend()`, thanks @nhatHero.
+* Fixed bug where the `DataSet` CSV import/export did not support non-ASCII
+  characters in Python 3.x.
+* Fixed bug where `model_to_dict` would attempt to traverse explicitly disabled
+  foreign-key backrefs (#1785).
+* Fixed bug when attempting to migrate SQLite tables that have a field whose
+  column-name begins with "primary_".
+* Fixed bug with inheriting deferred foreign-keys.
+
+[View commits](https://github.com/coleifer/peewee/compare/3.7.1...3.8.0)
+
+## 3.7.1
+
+**New features**
+
+* Added `table_settings` model `Meta` option, which should be a list of strings
+  specifying additional options for `CREATE TABLE`, which are placed *after*
+  the closing parentheses.
+* Allow specification of `on_update` and `on_delete` behavior for many-to-many
+  relationships when using `ManyToManyField`.
+
+**Bugfixes**
+
+* Fixed incorrect SQL generation for Postgresql ON CONFLICT clause when the
+  conflict_target is a named constraint (rather than an index expression). This
+  introduces a new keyword-argument to the `on_conflict()` method:
+  `conflict_constraint`, which is currently only supported by Postgresql. Refs
+  issue #1737.
+* Fixed incorrect SQL for sub-selects used on the right side of `IN`
+  expressions. Previously the query would be assigned an alias, even though an
+  alias was not needed.
+* Fixed incorrect SQL generation for Model indexes which contain SQL functions
+  as indexed columns.
+* Fixed bug in the generation of special queries used to perform operations on
+  SQLite FTS5 virtual tables.
+* Allow `frozenset` to be correctly parameterized as a list of values.
+* Allow multi-value INSERT queries to specify `columns` as a list of strings.
+* Support `CROSS JOIN` for model select queries.
+
+[View commits](https://github.com/coleifer/peewee/compare/3.7.0...3.7.1)
+
+## 3.7.0
+
+**Backwards-incompatible changes**
+
+* Pool database `close_all()` method renamed to `close_idle()` to better
+  reflect the actual behavior.
+* Databases will now raise `InterfaceError` when `connect()` or `close()` are
+  called on an uninitialized, deferred database object.
+
+**New features**
+
+* Add methods to the migrations extension to support adding and dropping table
+  constraints.
 * Add [Model.bulk_create()](http://docs.peewee-orm.com/en/latest/peewee/api.html#Model.bulk_create)
   method for bulk-inserting unsaved model instances.
-* Even *more* changes to the `setup.py` script. In this case I've added a helper
-  function which will reliably determine if the SQLite3 extensions can be built.
-  This follows the approach taken by the Python YAML package.
-* Fixed bug when using the Postgres `ArrayField` with an array of `BlobField`.
+* Add `close_stale()` method to the connection pool to support closing stale
+  connections.
+* The `FlaskDB` class in `playhouse.flask_utils` now accepts a `model_class`
+  parameter, which can be used to specify a custom base-class for models.
 
-[View commits](https://github.com/coleifer/peewee/compare/3.6.4...master)
+**Bugfixes**
+
+* Parentheses were not added to subqueries used in function calls with more
+  than one argument.
+* Fixed bug when attempting to serialize many-to-many fields which were created
+  initially with a `DeferredThroughModel`, see #1708.
+* Fixed bug when using the Postgres `ArrayField` with an array of `BlobField`.
+* Allow `Proxy` databases to be used as a context-manager.
+* Fixed bug where the APSW driver was referring to the SQLite version from the
+  standard library `sqlite3` driver, rather than from `apsw`.
+* Reflection library attempts to wrap server-side column defaults in quotation
+  marks if the column data-type is text/varchar.
+* Missing import in migrations library, which would cause errors when
+  attempting to add indexes whose name exceeded 64 chars.
+* When using the Postgres connection pool, ensure any open/pending transactions
+  are rolled-back when the connection is recycled.
+* Even *more* changes to the `setup.py` script. In this case I've added a
+  helper function which will reliably determine if the SQLite3 extensions can
+  be built. This follows the approach taken by the Python YAML package.
+
+[View commits](https://github.com/coleifer/peewee/compare/3.6.4...3.7.0)
 
 ## 3.6.4
 

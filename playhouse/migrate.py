@@ -98,9 +98,26 @@ Dropping an index:
 
     # Specify the index name.
     migrate(migrator.drop_index('story', 'story_pub_date_status'))
+
+Adding or dropping table constraints:
+
+.. code-block:: python
+
+    # Add a CHECK() constraint to enforce the price cannot be negative.
+    migrate(migrator.add_constraint(
+        'products',
+        'price_check',
+        Check('price >= 0')))
+
+    # Remove the price check constraint.
+    migrate(migrator.drop_constraint('products', 'price_check'))
+
+    # Add a UNIQUE constraint on the first and last names.
+    migrate(migrator.add_unique('person', 'first_name', 'last_name'))
 """
 from collections import namedtuple
 import functools
+import hashlib
 import re
 
 from peewee import *
@@ -111,7 +128,9 @@ from peewee import Expression
 from peewee import Node
 from peewee import NodeList
 from peewee import OP
+from peewee import callable_
 from peewee import sort_models
+from peewee import _truncate_constraint_name
 
 
 class Operation(object):
@@ -182,7 +201,7 @@ class SchemaMigrator(object):
     @operation
     def apply_default(self, table, column_name, field):
         default = field.default
-        if callable(default):
+        if callable_(default):
             default = default()
 
         return (self.make_context()
@@ -220,6 +239,30 @@ class SchemaMigrator(object):
             self.add_inline_fk_sql(ctx, field)
         return ctx
 
+    @operation
+    def add_constraint(self, table, name, constraint):
+        return (self
+                ._alter_table(self.make_context(), table)
+                .literal(' ADD CONSTRAINT ')
+                .sql(Entity(name))
+                .literal(' ')
+                .sql(constraint))
+
+    @operation
+    def add_unique(self, table, *column_names):
+        constraint_name = 'uniq_%s' % '_'.join(column_names)
+        constraint = NodeList((
+            SQL('UNIQUE'),
+            EnclosedNodeList([Entity(column) for column in column_names])))
+        return self.add_constraint(table, constraint_name, constraint)
+
+    @operation
+    def drop_constraint(self, table, name):
+        return (self
+                ._alter_table(self.make_context(), table)
+                .literal(' DROP CONSTRAINT ')
+                .sql(Entity(name)))
+
     def add_inline_fk_sql(self, ctx, field):
         ctx = (ctx
                .literal(' REFERENCES ')
@@ -241,7 +284,7 @@ class SchemaMigrator(object):
                .literal('ALTER TABLE ')
                .sql(Entity(table))
                .literal(' ADD CONSTRAINT ')
-               .sql(Entity(constraint))
+               .sql(Entity(_truncate_constraint_name(constraint)))
                .literal(' FOREIGN KEY ')
                .sql(EnclosedNodeList((Entity(column_name),)))
                .literal(' REFERENCES ')
@@ -456,7 +499,7 @@ class MySQLMigrator(SchemaMigrator):
                 .sql(Entity(new_name)))
 
     def _get_column_definition(self, table, column_name):
-        cursor = self.database.execute_sql('DESCRIBE %s;' % table)
+        cursor = self.database.execute_sql('DESCRIBE `%s`;' % table)
         rows = cursor.fetchall()
         for row in rows:
             column = MySQLColumn(*row)
@@ -623,6 +666,7 @@ class SqliteMigrator(SchemaMigrator):
         new_column_defs = []
         new_column_names = []
         original_column_names = []
+        constraint_terms = ('foreign ', 'primary ', 'constraint ')
 
         for column_def in column_defs:
             column_name, = self.column_name_re.match(column_def).groups()
@@ -637,7 +681,9 @@ class SqliteMigrator(SchemaMigrator):
                     new_column_names.append(column_name)
             else:
                 new_column_defs.append(column_def)
-                if not column_name.lower().startswith(('foreign', 'primary')):
+
+                # Avoid treating constraints as columns.
+                if not column_def.lower().startswith(constraint_terms):
                     new_column_names.append(column_name)
                     original_column_names.append(column_name)
 
@@ -757,6 +803,14 @@ class SqliteMigrator(SchemaMigrator):
         def _drop_not_null(column_name, column_def):
             return column_def.replace('NOT NULL', '')
         return self._update_column(table, column, _drop_not_null)
+
+    @operation
+    def add_constraint(self, table, name, constraint):
+        raise NotImplementedError
+
+    @operation
+    def drop_constraint(self, table, name):
+        raise NotImplementedError
 
     @operation
     def add_foreign_key_constraint(self, table, column_name, field,

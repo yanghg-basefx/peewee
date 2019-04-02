@@ -18,6 +18,10 @@ from playhouse.reflection import Introspector
 if sys.version_info[0] == 3:
     basestring = str
     from functools import reduce
+    def open_file(f, mode):
+        return open(f, mode, encoding='utf8')
+else:
+    open_file = open
 
 
 class DataSet(object):
@@ -94,6 +98,7 @@ class DataSet(object):
                 dependencies.extend(self.get_table_dependencies(table))
         else:
             dependencies = None  # Update all tables.
+            self._models = {}
         updated = self._introspector.generate_models(
             skip_invalid=True,
             table_names=dependencies,
@@ -146,7 +151,7 @@ class DataSet(object):
                **kwargs):
         self._check_arguments(filename, file_obj, format, self._export_formats)
         if filename:
-            file_obj = open(filename, 'w')
+            file_obj = open_file(filename, 'w')
 
         exporter = self._export_formats[format](query)
         exporter.export(file_obj, **kwargs)
@@ -158,7 +163,7 @@ class DataSet(object):
              strict=False, **kwargs):
         self._check_arguments(filename, file_obj, format, self._export_formats)
         if filename:
-            file_obj = open(filename, 'r')
+            file_obj = open_file(filename, 'r')
 
         importer = self._import_formats[format](self[table], strict)
         count = importer.load(file_obj, **kwargs)

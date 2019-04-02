@@ -564,22 +564,18 @@ Sqlcipher backend
 
 * Although this extention's code is short, it has not been properly
   peer-reviewed yet and may have introduced vulnerabilities.
-* The code contains minimum values for `passphrase` length and
-  `kdf_iter`, as well as a default value for the later.
-  **Do not** regard these numbers as advice. Consult the docs at
-  http://sqlcipher.net/sqlcipher-api/ and security experts.
 
 Also note that this code relies on pysqlcipher_ and sqlcipher_, and
 the code there might have vulnerabilities as well, but since these
 are widely used crypto modules, we can expect "short zero days" there.
 
-..  _pysqlcipher: https://pypi.python.org/pypi/pysqlcipher
+..  _pysqlcipher: https://pypi.python.org/pypi/pysqlcipher3
 ..  _sqlcipher: http://sqlcipher.net
 
 sqlcipher_ext API notes
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-.. py:class:: SqlCipherDatabase(database, passphrase, kdf_iter=64000, **kwargs)
+.. py:class:: SqlCipherDatabase(database, passphrase, **kwargs)
 
     Subclass of :py:class:`SqliteDatabase` that stores the database
     encrypted. Instead of the standard ``sqlite3`` backend, it uses pysqlcipher_:
@@ -589,15 +585,15 @@ sqlcipher_ext API notes
 
     :param database: Path to encrypted database filename to open [or create].
     :param passphrase: Database encryption passphrase: should be at least 8 character
-        long (or an error is raised), but it is *strongly advised* to enforce better
-        `passphrase strength`_ criteria in your implementation.
-    :param kdf_iter: [Optional] number of PBKDF2_ iterations.
+        long, but it is *strongly advised* to enforce better `passphrase strength`_
+        criteria in your implementation.
 
     * If the ``database`` file doesn't exist, it will be *created* with
-      encryption by a key derived from ``passhprase`` with ``kdf_iter``
-      PBKDF2_ iterations.
-    * When trying to open an existing database, ``passhprase`` and ``kdf_iter``
-      should be *identical* to the ones used when it was created.
+      encryption by a key derived from ``passhprase``.
+    * When trying to open an existing database, ``passhprase`` should be
+      identical to the ones used when it was created. If the passphrase is
+      incorrect, an error will be raised when first attempting to access the
+      database.
 
     .. py:method:: rekey(passphrase)
 
@@ -605,29 +601,30 @@ sqlcipher_ext API notes
 
         Change the passphrase for database.
 
-.. _PBKDF2: https://en.wikipedia.org/wiki/PBKDF2
 .. _passphrase strength: https://en.wikipedia.org/wiki/Password_strength
 
-Notes:
+.. note::
+    SQLCipher can be configured using a number of extension PRAGMAs. The list
+    of PRAGMAs and their descriptions can be found in the `SQLCipher documentation <https://www.zetetic.net/sqlcipher/sqlcipher-api/>`_.
 
-    * [Hopefully] there's no way to tell whether the passphrase is wrong
-      or the file is corrupt.
-      In both cases -- *the first time we try to access the database* -- a
-      :py:class:`DatabaseError` error is raised,
-      with the *exact* message: ``"file is encrypted or is not a database"``.
+    For example to specify the number of PBKDF2 iterations for the key
+    derivation (64K in SQLCipher 3.x, 256K in SQLCipher 4.x by default):
 
-      As mentioned above, this only happens when you *access* the database,
-      so if you need to know *right away* whether the passphrase was correct,
-      you can trigger this check by calling [e.g.]
-      :py:meth:`~Database.get_tables()` (see example below).
+    .. code-block:: python
 
-    * Most applications can expect failed attempts to open the database
-      (common case: prompting the user for ``passphrase``), so
-      the database can't be hardwired into the :py:class:`Meta` of
-      model classes. To defer initialization, pass `None` in to the
-      database.
+        # Use 1,000,000 iterations.
+        db = SqlCipherDatabase('my_app.db', pragmas={'kdf_iter': 1000000})
 
-Example:
+    To use a cipher page-size of 16KB and a cache-size of 10,000 pages:
+
+    .. code-block:: python
+
+        db = SqlCipherDatabase('my_app.db', passphrase='secret!!!', pragmas={
+            'cipher_page_size': 1024 * 16,
+            'cache_size': 10000})  # 10,000 16KB pages, or 160MB.
+
+
+Example of prompting the user for a passphrase:
 
 .. code-block:: python
 
@@ -1010,10 +1007,10 @@ changes:
 
 .. code-block:: python
 
-    def blog_search(query):
+    def blog_search(search_term):
         return Blog.select().where(
             (Blog.status == Blog.STATUS_PUBLISHED) &
-            Match(Blog.content, query))
+            Match(Blog.content, search_term))
 
 The :py:func:`Match` function will automatically convert the left-hand operand
 to a ``tsvector``, and the right-hand operand to a ``tsquery``. For better
@@ -1033,6 +1030,9 @@ dedicated column for storing ``tsvector`` data:
         content = TextField()
         search_content = TSVectorField()
 
+.. note::
+    :py:class:`TSVectorField`, will automatically be created with a GIN index.
+
 You will need to explicitly convert the incoming text data to ``tsvector`` when
 inserting or updating the ``search_content`` field:
 
@@ -1043,7 +1043,14 @@ inserting or updating the ``search_content`` field:
         content=content,
         search_content=fn.to_tsvector(content))
 
-.. note:: If you are using the :py:class:`TSVectorField`, it will automatically be created with a GIN index.
+To perform a full-text search, use :py:meth:`TSVectorField.match`:
+
+.. code-block:: python
+
+    terms = 'python & (sqlite | postgres)'
+    results = Blog.select().where(Blog.search_content.match(terms))
+
+For more information, see the `Postgres full-text search docs <https://www.postgresql.org/docs/current/textsearch.html>`_.
 
 
 postgres_ext API notes
@@ -1503,6 +1510,19 @@ postgres_ext API notes
             APIResponse.select().where(
                 APIResponse.data.contained_by(big_doc))
 
+    .. py:method:: concat(data)
+
+        Concatentate two field data and the provided data. Note that this
+        operation does not merge or do a "deep concat".
+
+    .. py:method:: has_key(key)
+
+        Test whether the key exists at the top-level of the JSON object.
+
+    .. py:method:: remove(*keys)
+
+        Remove one or more keys from the top-level of the JSON object.
+
 
 .. py:function:: Match(field, query)
 
@@ -1514,10 +1534,10 @@ postgres_ext API notes
 
     .. code-block:: python
 
-        def blog_search(query):
+        def blog_search(search_term):
             return Blog.select().where(
                 (Blog.status == Blog.STATUS_PUBLISHED) &
-                Match(Blog.content, query))
+                Match(Blog.content, search_term))
 
 .. py:class:: TSVectorField
 
@@ -1545,6 +1565,21 @@ postgres_ext API notes
           blog_entry = Blog.create(
               content=content,
               search_content=fn.to_tsvector(content))  # Note `to_tsvector()`.
+
+    .. py:method:: match(query[, language=None[, plain=False]])
+
+        :param str query: the full-text search query.
+        :param str language: language name (optional).
+        :param bool plain: parse search query using plain (simple) parser.
+        :returns: an expression representing full-text search/match.
+
+        Example:
+
+        .. code-block:: python
+
+            # Perform a search using the "match" method.
+            terms = 'python & (sqlite | postgres)'
+            results = Blog.select().where(Blog.search_content.match(terms))
 
 
 .. _mysql_ext:
@@ -1819,6 +1854,8 @@ API
         Close the connection to the underlying database.
 
 .. py:class:: Table(dataset, name, model_class)
+
+    :noindex:
 
     Provides a high-level API for working with rows in a given table.
 
@@ -2150,6 +2187,9 @@ dictionary.
     Table is created automatically (if it doesn't exist) when the ``KeyValue``
     is instantiated.
 
+    Uses efficient upsert implementation for setting and updating/overwriting
+    key/value pairs.
+
     Basic examples:
 
     .. code-block:: python
@@ -2161,7 +2201,7 @@ dictionary.
         # Set (or overwrite) the value for "k1".
         KV['k1'] = 'v1'
 
-        # Set (or update) multiple keys at once.
+        # Set (or update) multiple keys at once (uses an efficient upsert).
         KV.update(k2='v2', k3='v3')
 
         # Getting values works as you'd expect.
@@ -2321,11 +2361,6 @@ dictionary.
             >>> dict(KV)
             {'k1': 1, 'k2': -2, 'k3': 3, 'k4': 4}
 
-        .. attention::
-            Because Postgresql does not support INSERT + REPLACE, the
-            :py:meth:`KeyValue.update` method is not supported for Postgresql
-            databases (as it cannot be implemented efficiently).
-
     .. py:method:: get(expr[, default=None])
 
         :param expr: a single key or an expression.
@@ -2409,6 +2444,12 @@ helpers for serializing models to dictionaries and vice-versa.
 
         >>> model_to_dict(t2, recurse=False)
         {'id': 1, 'message': 'tweet-2', 'user': 1}
+
+    The implementation of ``model_to_dict`` is fairly complex, owing to the
+    various usages it attempts to support. If you have a special usage, I
+    strongly advise that you do **not** attempt to shoe-horn some crazy
+    combination of parameters into this function. Just write a simple function
+    that accomplishes exactly what you're attempting to do.
 
 .. py:function:: dict_to_model(model_class, data[, ignore_unknown=False])
 
@@ -2655,7 +2696,7 @@ Option    Meaning                             Example
 -H        host to connect to                  -H remote.db.server
 -p        port to connect on                  -p 9001
 -u        database user                       -u postgres
--P        database password                   -P secret
+-P        database password                   -P (will be prompted for password)
 -s        schema                              -s public
 -t        tables to generate                  -t tweet,users,relationships
 -v        generate models for VIEWs           (no argument)
@@ -2669,6 +2710,14 @@ The following are valid parameters for the ``engine`` (``-e``):
 * mysql
 * postgresql
 
+.. warning::
+    If a password is required to access your database, you will be prompted to
+    enter it using a secure prompt.
+
+    **The password will be included in the output**. Specifically, at the top
+    of the file a :py:class:`Database` will be defined along with any required
+    parameters -- including the password.
+
 pwiz examples
 ^^^^^^^^^^^^^
 
@@ -2679,8 +2728,9 @@ Examples of introspecting various databases:
     # Introspect a Sqlite database.
     python -m pwiz -e sqlite path/to/sqlite_database.db
 
-    # Introspect a MySQL database, logging in as root:secret.
-    python -m pwiz -e mysql -u root -P secret mysql_db_name
+    # Introspect a MySQL database, logging in as root. You will be prompted
+    # for a password ("-P").
+    python -m pwiz -e mysql -u root -P mysql_db_name
 
     # Introspect a Postgresql database on a remote server.
     python -m pwiz -e postgres -u postgres -H 10.1.0.3 pg_db_name
@@ -2892,6 +2942,22 @@ Dropping an index:
     # Specify the index name.
     migrate(migrator.drop_index('story', 'story_pub_date_status'))
 
+Adding or dropping table constraints:
+
+.. code-block:: python
+
+    # Add a CHECK() constraint to enforce the price cannot be negative.
+    migrate(migrator.add_constraint(
+        'products',
+        'price_check',
+        Check('price >= 0')))
+
+    # Remove the price check constraint.
+    migrate(migrator.drop_constraint('products', 'price_check'))
+
+    # Add a UNIQUE constraint on the first and last names.
+    migrate(migrator.add_unique('person', 'first_name', 'last_name'))
+
 
 Migrations API
 ^^^^^^^^^^^^^^
@@ -2968,8 +3034,25 @@ Migrations API
 
     .. py:method:: drop_index(table, index_name)
 
-        :param str table Name of the table containing the index to be dropped.
+        :param str table: Name of the table containing the index to be dropped.
         :param str index_name: Name of the index to be dropped.
+
+    .. py:method:: add_constraint(table, name, constraint)
+
+        :param str table: Table to add constraint to.
+        :param str name: Name used to identify the constraint.
+        :param constraint: either a :py:func:`Check` constraint or for
+            adding an arbitrary constraint use :py:class:`SQL`.
+
+    .. py:method:: drop_constraint(table, name)
+
+        :param str table: Table to drop constraint from.
+        :param str name: Name of constraint to drop.
+
+    .. py:method:: add_unique(table, *column_names)
+
+        :param str table: Table to add constraint to.
+        :param str column_names: One or more columns for UNIQUE constraint.
 
 .. py:class:: PostgresqlMigrator(database)
 
@@ -2985,6 +3068,13 @@ Migrations API
 
     Generate migrations for SQLite databases.
 
+    SQLite has limited support for ``ALTER TABLE`` queries, so the following
+    operations are currently not supported for SQLite:
+
+    * ``add_constraint``
+    * ``drop_constraint``
+    * ``add_unique``
+
 .. py:class:: MySQLMigrator(database)
 
     Generate migrations for MySQL databases.
@@ -2998,6 +3088,106 @@ Reflection
 The reflection module contains helpers for introspecting existing databases.
 This module is used internally by several other modules in the playhouse,
 including :ref:`dataset` and :ref:`pwiz`.
+
+.. py:function:: generate_models(database[, schema=None[, **options]])
+
+    :param Database database: database instance to introspect.
+    :param str schema: optional schema to introspect.
+    :param options: arbitrary options, see :py:meth:`Introspector.generate_models` for details.
+    :returns: a ``dict`` mapping table names to model classes.
+
+    Generate models for the tables in the given database. For an example of how
+    to use this function, see the section :ref:`interactive`.
+
+    Example:
+
+    .. code-block:: pycon
+
+        >>> from peewee import *
+        >>> from playhouse.reflection import generate_models
+        >>> db = PostgresqlDatabase('my_app')
+        >>> models = generate_models(db)
+        >>> list(models.keys())
+        ['account', 'customer', 'order', 'orderitem', 'product']
+
+        >>> globals().update(models)  # Inject models into namespace.
+        >>> for cust in customer.select():  # Query using generated model.
+        ...     print(cust.name)
+        ...
+
+        Huey Kitty
+        Mickey Dog
+
+.. py:function:: print_model(model)
+
+    :param Model model: model class to print
+    :returns: no return value
+
+    Print a user-friendly description of a model class, useful for debugging or
+    interactive use. Currently this prints the table name, and all fields along
+    with their data-types. The :ref:`interactive` section contains an example.
+
+    Example output:
+
+    .. code-block:: pycon
+
+        >>> from playhouse.reflection import print_model
+        >>> print_model(User)
+        user
+          id AUTO PK
+          email TEXT
+          name TEXT
+          dob DATE
+
+        index(es)
+          email UNIQUE
+
+        >>> print_model(Tweet)
+        tweet
+          id AUTO PK
+          user INT FK: User.id
+          title TEXT
+          content TEXT
+          timestamp DATETIME
+          is_published BOOL
+
+        index(es)
+          user_id
+          is_published, timestamp
+
+.. py:function:: print_table_sql(model)
+
+    :param Model model: model to print
+    :returns: no return value
+
+    Prints the SQL ``CREATE TABLE`` for the given model class, which may be
+    useful for debugging or interactive use. See the :ref:`interactive` section
+    for example usage. Note that indexes and constraints are not included in
+    the output of this function.
+
+    Example output:
+
+    .. code-block:: pycon
+
+        >>> from playhouse.reflection import print_table_sql
+        >>> print_table_sql(User)
+        CREATE TABLE IF NOT EXISTS "user" (
+          "id" INTEGER NOT NULL PRIMARY KEY,
+          "email" TEXT NOT NULL,
+          "name" TEXT NOT NULL,
+          "dob" DATE NOT NULL
+        )
+
+        >>> print_table_sql(Tweet)
+        CREATE TABLE IF NOT EXISTS "tweet" (
+          "id" INTEGER NOT NULL PRIMARY KEY,
+          "user_id" INTEGER NOT NULL,
+          "title" TEXT NOT NULL,
+          "content" TEXT NOT NULL,
+          "timestamp" DATETIME NOT NULL,
+          "is_published" INTEGER NOT NULL,
+          FOREIGN KEY ("user_id") REFERENCES "user" ("id")
+        )
 
 .. py:class:: Introspector(metadata[, schema=None])
 
@@ -3185,7 +3375,22 @@ Pool APIs
 
     .. py:method:: close_idle()
 
-        Close all idle connections.
+        Close all idle connections. This does not include any connections that
+        are currently in-use -- only those that were previously created but
+        have since been returned back to the pool.
+
+    .. py:method:: close_stale([age=600])
+
+        :param int age: Age at which a connection should be considered stale.
+        :returns: Number of connections closed.
+
+        Close connections which are in-use but exceed the given age. **Use
+        caution when calling this method!**
+
+    .. py:method:: close_all()
+
+        Close all connections. This includes any connections that may be in use
+        at the time. **Use caution when calling this method!**
 
 .. py:class:: PooledPostgresqlDatabase
 

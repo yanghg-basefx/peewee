@@ -51,9 +51,15 @@ data model, by defining one or more :py:class:`Model` classes:
             database = db # This model uses the "people.db" database.
 
 .. note::
-    Note that we named our model ``Person`` instead of ``People``. This is a
-    convention you should follow -- even though the table will contain multiple
-    people, we always name the class using the singular form.
+    Peewee will automatically infer the database table name from the name of
+    the class. You can override the default name by specifying a ``table_name``
+    attribute in the inner "Meta" class (alongside the ``database`` attribute).
+    To learn more about how Peewee generates table names,
+    refer to the :ref:`table_names` section.
+
+    Also note that we named our model ``Person`` instead of ``People``. This is
+    a convention you should follow -- even though the table will contain
+    multiple people, we always name the class using the singular form.
 
 There are lots of :ref:`field types <fields>` suitable for storing various
 types of data. Peewee handles converting between *pythonic* values those used
@@ -361,6 +367,11 @@ a *JOIN* and using a SQL function to aggregate the results.
     # Bob 2 pets
     # Grandma L. 0 pets
     # Herb 1 pets
+
+.. note::
+    Peewee provides a magical helper :py:func:`fn`, which can be used to call
+    any SQL function. In the above example, ``fn.COUNT(Pet.id).alias('pet_count')``
+    would be translated into ``COUNT(pet.id) AS pet_count``.
 
 Now let's list all the people and the names of all their pets. As you may have
 guessed, this could easily turn into another :ref:`N+1 <nplusone>` situation if

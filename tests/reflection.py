@@ -9,6 +9,7 @@ from .base import IS_SQLITE_OLD
 from .base import ModelTestCase
 from .base import TestModel
 from .base import db
+from .base import requires_models
 from .base import requires_sqlite
 from .base import skip_if
 from .base_models import Tweet
@@ -174,9 +175,28 @@ class TestReflection(BaseReflectionTestCase):
             ))
 
     def test_make_column_name(self):
+        # Tests for is_foreign_key=False.
         tests = (
             ('Column', 'column'),
-            ('Foo_iD', 'foo'),
+            ('Foo_id', 'foo_id'),
+            ('foo_id', 'foo_id'),
+            ('foo_id_id', 'foo_id_id'),
+            ('foo', 'foo'),
+            ('_id', '_id'),
+            ('a123', 'a123'),
+            ('and', 'and_'),
+            ('Class', 'class_'),
+            ('Class_ID', 'class_id'),
+            ('camelCase', 'camel_case'),
+            ('ABCdefGhi', 'ab_cdef_ghi'),
+        )
+        for col_name, expected in tests:
+            self.assertEqual(
+                self.introspector.make_column_name(col_name), expected)
+
+        # Tests for is_foreign_key=True.
+        tests = (
+            ('Foo_id', 'foo'),
             ('foo_id', 'foo'),
             ('foo_id_id', 'foo_id'),
             ('foo', 'foo'),
@@ -185,10 +205,12 @@ class TestReflection(BaseReflectionTestCase):
             ('and', 'and_'),
             ('Class', 'class_'),
             ('Class_ID', 'class_'),
+            ('camelCase', 'camel_case'),
+            ('ABCdefGhi', 'ab_cdef_ghi'),
         )
         for col_name, expected in tests:
             self.assertEqual(
-                self.introspector.make_column_name(col_name), expected)
+                self.introspector.make_column_name(col_name, True), expected)
 
     def test_make_model_name(self):
         tests = (
@@ -424,13 +446,43 @@ class EventLog(TestModel):
     data = CharField(constraints=[SQL('DEFAULT \'\'')])
     timestamp = DateTimeField(constraints=[SQL('DEFAULT current_timestamp')])
     flags = IntegerField(constraints=[SQL('DEFAULT 0')])
+    misc = TextField(constraints=[SQL('DEFAULT \'foo\'')])
+
+
+class DefaultVals(TestModel):
+    key = CharField(constraints=[SQL('DEFAULT \'foo\'')])
+    value = IntegerField(constraints=[SQL('DEFAULT 0')])
+
+    class Meta:
+        primary_key = CompositeKey('key', 'value')
 
 
 class TestReflectDefaultValues(BaseReflectionTestCase):
-    requires = [EventLog]
+    requires = [DefaultVals, EventLog]
 
     @requires_sqlite
     def test_default_values(self):
+        models = self.introspector.generate_models()
+        default_vals = models['default_vals']
+
+        create_table = (
+            'CREATE TABLE IF NOT EXISTS "default_vals" ('
+            '"key" VARCHAR(255) NOT NULL DEFAULT \'foo\', '
+            '"value" INTEGER NOT NULL DEFAULT 0, '
+            'PRIMARY KEY ("key", "value"))')
+
+        # Re-create table using the introspected schema.
+        self.assertSQL(default_vals._schema._create_table(), create_table, [])
+        default_vals.drop_table()
+        default_vals.create_table()
+
+        # Verify that the introspected schema has not changed.
+        models = self.introspector.generate_models()
+        default_vals = models['default_vals']
+        self.assertSQL(default_vals._schema._create_table(), create_table, [])
+
+    @requires_sqlite
+    def test_default_values_extended(self):
         models = self.introspector.generate_models()
         eventlog = models['event_log']
 
@@ -439,7 +491,8 @@ class TestReflectDefaultValues(BaseReflectionTestCase):
             '"id" INTEGER NOT NULL PRIMARY KEY, '
             '"data" VARCHAR(255) NOT NULL DEFAULT \'\', '
             '"timestamp" DATETIME NOT NULL DEFAULT current_timestamp, '
-            '"flags" INTEGER NOT NULL DEFAULT 0)')
+            '"flags" INTEGER NOT NULL DEFAULT 0, '
+            '"misc" TEXT NOT NULL DEFAULT \'foo\')')
 
         # Re-create table using the introspected schema.
         self.assertSQL(eventlog._schema._create_table(), create_table, [])
@@ -517,3 +570,30 @@ class TestReflectViews(BaseReflectionTestCase):
         self.assertEqual([(np.content, np.timestamp) for np in NP.select()], [
             ('n3', datetime.datetime(2018, 1, 3)),
             ('n1', datetime.datetime(2018, 1, 1))])
+
+
+class Event(TestModel):
+    key = TextField()
+    timestamp = DateTimeField(index=True)
+    metadata = TextField(default='')
+
+
+class TestInteractiveHelpers(ModelTestCase):
+    requires = [Category, Event]
+
+    def test_generate_models(self):
+        M = generate_models(self.database)
+        self.assertTrue('category' in M)
+        self.assertTrue('event' in M)
+
+        def assertFields(m, expected):
+            actual = [(f.name, f.field_type) for f in m._meta.sorted_fields]
+            self.assertEqual(actual, expected)
+
+        assertFields(M['category'], [('id', 'AUTO'), ('name', 'VARCHAR'),
+                                     ('parent', 'INT')])
+        assertFields(M['event'], [
+            ('id', 'AUTO'),
+            ('key', 'TEXT'),
+            ('timestamp', 'DATETIME'),
+            ('metadata', 'TEXT')])

@@ -5,6 +5,7 @@ from peewee import Database
 from peewee import ModelIndex
 
 from .base import get_in_memory_db
+from .base import requires_postgresql
 from .base import BaseTestCase
 from .base import ModelDatabaseTestCase
 from .base import TestModel
@@ -12,9 +13,17 @@ from .base import __sql__
 from .base_models import *
 
 
+class CKM(TestModel):
+    category = CharField()
+    key = CharField()
+    value = IntegerField()
+    class Meta:
+        primary_key = CompositeKey('category', 'key')
+
+
 class TestModelSQL(ModelDatabaseTestCase):
     database = get_in_memory_db()
-    requires = [Category, Note, Person, Relationship]
+    requires = [Category, CKM, Note, Person, Relationship, Sample, User]
 
     def test_select(self):
         query = (Person
@@ -77,6 +86,35 @@ class TestModelSQL(ModelDatabaseTestCase):
             'FROM "users" AS "t1" '
             'LEFT OUTER JOIN "tweet" AS "t2" ON ("t2"."user_id" = "t1"."id") '
             'GROUP BY "t1"."id", "t1"."username"'), [])
+
+    def test_group_by_extend(self):
+        query = (User
+                 .select(User, fn.COUNT(Tweet.id).alias('tweet_count'))
+                 .join(Tweet, JOIN.LEFT_OUTER)
+                 .group_by_extend(User.id).group_by_extend(User.username))
+        self.assertSQL(query, (
+            'SELECT "t1"."id", "t1"."username", '
+            'COUNT("t2"."id") AS "tweet_count" '
+            'FROM "users" AS "t1" '
+            'LEFT OUTER JOIN "tweet" AS "t2" ON ("t2"."user_id" = "t1"."id") '
+            'GROUP BY "t1"."id", "t1"."username"'), [])
+
+    def test_order_by(self):
+        query = (User
+                 .select()
+                 .order_by(User.username.desc(), User.id))
+        self.assertSQL(query, (
+            'SELECT "t1"."id", "t1"."username" FROM "users" AS "t1" '
+            'ORDER BY "t1"."username" DESC, "t1"."id"'), [])
+
+    def test_order_by_extend(self):
+        query = (User
+                 .select()
+                 .order_by_extend(User.username.desc())
+                 .order_by_extend(User.id))
+        self.assertSQL(query, (
+            'SELECT "t1"."id", "t1"."username" FROM "users" AS "t1" '
+            'ORDER BY "t1"."username" DESC, "t1"."id"'), [])
 
     def test_subquery_correction(self):
         users = User.select().where(User.username.in_(['foo', 'bar']))
@@ -222,6 +260,21 @@ class TestModelSQL(ModelDatabaseTestCase):
             'SELECT "t1"."name", "t1"."parent_id" FROM "category" AS "t1" '
             'WHERE ("t1"."parent_id" = ?)'), ['test'])
 
+    def test_cross_join(self):
+        class A(TestModel):
+            id = IntegerField(primary_key=True)
+        class B(TestModel):
+            id = IntegerField(primary_key=True)
+        query = (A
+                 .select(A.id.alias('aid'), B.id.alias('bid'))
+                 .join(B, JOIN.CROSS)
+                 .order_by(A.id, B.id))
+        self.assertSQL(query, (
+            'SELECT "t1"."id" AS "aid", "t2"."id" AS "bid" '
+            'FROM "a" AS "t1" '
+            'CROSS JOIN "b" AS "t2" '
+            'ORDER BY "t1"."id", "t2"."id"'), [])
+
     def test_raw(self):
         query = (Person
                  .raw('SELECT first, last, dob FROM person '
@@ -281,6 +334,47 @@ class TestModelSQL(ModelDatabaseTestCase):
             'VALUES (?, ?), (?, ?)'),
             [1, 'note-1', 2, 'note-2'])
 
+    def test_insert_many_defaults(self):
+        # Verify fields are inferred and values are read correctly, when
+        # partial data is given and a field has default values.
+        s2 = {'counter': 2, 'value': 2.}
+        s3 = {'counter': 3}
+        self.assertSQL(Sample.insert_many([s2, s3]), (
+            'INSERT INTO "sample" ("counter", "value") VALUES (?, ?), (?, ?)'),
+            [2, 2., 3, 1.])
+
+        self.assertSQL(Sample.insert_many([s3, s2]), (
+            'INSERT INTO "sample" ("counter", "value") VALUES (?, ?), (?, ?)'),
+            [3, 1., 2, 2.])
+
+    def test_insert_many_list_with_fields(self):
+        data = [(i,) for i in ('charlie', 'huey', 'zaizee')]
+        query = User.insert_many(data, fields=[User.username])
+        self.assertSQL(query, (
+            'INSERT INTO "users" ("username") VALUES (?), (?), (?)'),
+            ['charlie', 'huey', 'zaizee'])
+
+        # Use field name instead of field obj.
+        query = User.insert_many(data, fields=['username'])
+        self.assertSQL(query, (
+            'INSERT INTO "users" ("username") VALUES (?), (?), (?)'),
+            ['charlie', 'huey', 'zaizee'])
+
+    def test_insert_many_infer_fields(self):
+        data = [('f1', 'l1', '1980-01-01'),
+                ('f2', 'l2', '1980-02-02')]
+        self.assertSQL(Person.insert_many(data), (
+            'INSERT INTO "person" ("first", "last", "dob") '
+            'VALUES (?, ?, ?), (?, ?, ?)'),
+            ['f1', 'l1', datetime.date(1980, 1, 1),
+             'f2', 'l2', datetime.date(1980, 2, 2)])
+
+        # When primary key is not auto-increment, PKs are included.
+        data = [('c1', 'k1', 1), ('c2', 'k2', 2)]
+        self.assertSQL(CKM.insert_many(data), (
+            'INSERT INTO "ckm" ("category", "key", "value") '
+            'VALUES (?, ?, ?), (?, ?, ?)'), ['c1', 'k1', 1, 'c2', 'k2', 2])
+
     def test_insert_query(self):
         select = (Person
                   .select(Person.id, Person.first)
@@ -309,7 +403,7 @@ class TestModelSQL(ModelDatabaseTestCase):
         query = User.insert({User.username: 'zaizee'})
         self.assertSQL(query, (
             'INSERT INTO "user" ("username") '
-            'VALUES (?) RETURNING "id"'), ['zaizee'])
+            'VALUES (?) RETURNING "user"."id"'), ['zaizee'])
 
         class Person(Model):
             name = CharField()
@@ -320,7 +414,7 @@ class TestModelSQL(ModelDatabaseTestCase):
         query = Person.insert({Person.name: 'charlie', Person.ssn: '123'})
         self.assertSQL(query, (
             'INSERT INTO "person" ("ssn", "name") VALUES (?, ?) '
-            'RETURNING "ssn"'), ['123', 'charlie'])
+            'RETURNING "person"."ssn"'), ['123', 'charlie'])
 
         query = Person.insert({Person.name: 'huey'}).returning()
         self.assertSQL(query, (
@@ -337,16 +431,17 @@ class TestModelSQL(ModelDatabaseTestCase):
                           Stat.timestamp: datetime.datetime(2017, 1, 1)})
                  .where(Stat.url == '/peewee'))
         self.assertSQL(query, (
-            'UPDATE "stat" SET "count" = ("count" + ?), "timestamp" = ? '
-            'WHERE ("url" = ?)'),
+            'UPDATE "stat" SET "count" = ("stat"."count" + ?), '
+            '"timestamp" = ? '
+            'WHERE ("stat"."url" = ?)'),
             [1, 1483228800, '/peewee'])
 
         query = (Stat
                  .update(count=Stat.count + 1)
                  .where(Stat.url == '/peewee'))
         self.assertSQL(query, (
-            'UPDATE "stat" SET "count" = ("count" + ?) '
-            'WHERE ("url" = ?)'),
+            'UPDATE "stat" SET "count" = ("stat"."count" + ?) '
+            'WHERE ("stat"."url" = ?)'),
             [1, '/peewee'])
 
     def test_update_from(self):
@@ -366,26 +461,26 @@ class TestModelSQL(ModelDatabaseTestCase):
                  .where(Account.sales == SalesPerson.id))
         self.assertSQL(query, (
             'UPDATE "account" SET '
-            '"contact_first" = "first", '
-            '"contact_last" = "last" '
+            '"contact_first" = "t1"."first", '
+            '"contact_last" = "t1"."last" '
             'FROM "sales_person" AS "t1" '
-            'WHERE ("sales_id" = "id")'), [])
+            'WHERE ("account"."sales_id" = "t1"."id")'), [])
 
         query = (User
-                 .update({User.username: QualifiedNames(Tweet.content)})
+                 .update({User.username: Tweet.content})
                  .from_(Tweet)
                  .where(Tweet.content == 'tx'))
         self.assertSQL(query, (
             'UPDATE "users" SET "username" = "t1"."content" '
-            'FROM "tweet" AS "t1" WHERE ("content" = ?)'), ['tx'])
+            'FROM "tweet" AS "t1" WHERE ("t1"."content" = ?)'), ['tx'])
 
     def test_update_from_qualnames(self):
         data = [(1, 'u1-x'), (2, 'u2-x')]
         vl = ValuesList(data, columns=('id', 'username'), alias='tmp')
         query = (User
-                 .update({User.username: QualifiedNames(vl.c.username)})
+                 .update({User.username: vl.c.username})
                  .from_(vl)
-                 .where(QualifiedNames(User.id == vl.c.id)))
+                 .where(User.id == vl.c.id))
         self.assertSQL(query, (
             'UPDATE "users" SET "username" = "tmp"."username" '
             'FROM (VALUES (?, ?), (?, ?)) AS "tmp"("id", "username") '
@@ -396,9 +491,9 @@ class TestModelSQL(ModelDatabaseTestCase):
         vl = ValuesList(data, columns=('id', 'username'), alias='tmp')
         subq = vl.select(vl.c.id, vl.c.username)
         query = (User
-                 .update({User.username: QualifiedNames(subq.c.username)})
+                 .update({User.username: subq.c.username})
                  .from_(subq)
-                 .where(QualifiedNames(User.id == subq.c.id)))
+                 .where(User.id == subq.c.id))
         self.assertSQL(query, (
             'UPDATE "users" SET "username" = "t1"."username" FROM ('
             'SELECT "tmp"."id", "tmp"."username" '
@@ -411,13 +506,13 @@ class TestModelSQL(ModelDatabaseTestCase):
                  .where(Note.author << (Person.select(Person.id)
                                         .where(Person.last == 'cat'))))
         self.assertSQL(query, ('DELETE FROM "note" '
-                               'WHERE ("author_id" IN ('
+                               'WHERE ("note"."author_id" IN ('
                                'SELECT "t1"."id" FROM "person" AS "t1" '
                                'WHERE ("t1"."last" = ?)))'), ['cat'])
 
         query = Note.delete().where(Note.author == Person(id=123))
-        self.assertSQL(query, 'DELETE FROM "note" WHERE ("author_id" = ?)',
-                       [123])
+        self.assertSQL(query, (
+            'DELETE FROM "note" WHERE ("note"."author_id" = ?)'), [123])
 
     def test_delete_recursive(self):
         class User(TestModel):
@@ -440,20 +535,20 @@ class TestModelSQL(ModelDatabaseTestCase):
 
         self.assertEqual(sorted(accum), [
             ('DELETE FROM "like" WHERE ('
-             '"tweet_id" IN ('
+             '"like"."tweet_id" IN ('
              'SELECT "t1"."id" FROM "tweet" AS "t1" WHERE ('
              '"t1"."user_id" = ?)))', [1]),
-            ('DELETE FROM "like" WHERE ("user_id" = ?)', [1]),
-            ('DELETE FROM "relationship" WHERE ("from_user_id" = ?)', [1]),
-            ('DELETE FROM "relationship" WHERE ("to_user_id" = ?)', [1]),
-            ('DELETE FROM "tweet" WHERE ("user_id" = ?)', [1]),
+            ('DELETE FROM "like" WHERE ("like"."user_id" = ?)', [1]),
+            ('DELETE FROM "relationship" '
+             'WHERE ("relationship"."from_user_id" = ?)', [1]),
+            ('DELETE FROM "relationship" '
+             'WHERE ("relationship"."to_user_id" = ?)', [1]),
+            ('DELETE FROM "tweet" WHERE ("tweet"."user_id" = ?)', [1]),
         ])
 
     def test_aliases(self):
         class A(TestModel):
             a = CharField()
-            class Meta:
-                table_alias = 'a_tbl'
         class B(TestModel):
             b = CharField()
             a_link = ForeignKeyField(A)
@@ -463,8 +558,6 @@ class TestModelSQL(ModelDatabaseTestCase):
         class D(TestModel):
             d = CharField()
             c_link = ForeignKeyField(C)
-            class Meta:
-                table_alias = 'd_tbl'
 
         query = (D
                  .select(D.d, C.c)
@@ -472,13 +565,13 @@ class TestModelSQL(ModelDatabaseTestCase):
                  .where(C.b_link << (
                      B.select(B.id).join(A).where(A.a == 'a'))))
         self.assertSQL(query, (
-            'SELECT "d_tbl"."d", "t1"."c" '
-            'FROM "d" AS "d_tbl" '
-            'INNER JOIN "c" AS "t1" ON ("d_tbl"."c_link_id" = "t1"."id") '
-            'WHERE ("t1"."b_link_id" IN ('
-            'SELECT "t2"."id" FROM "b" AS "t2" '
-            'INNER JOIN "a" AS "a_tbl" ON ("t2"."a_link_id" = "a_tbl"."id") '
-            'WHERE ("a_tbl"."a" = ?)))'), ['a'])
+            'SELECT "t1"."d", "t2"."c" '
+            'FROM "d" AS "t1" '
+            'INNER JOIN "c" AS "t2" ON ("t1"."c_link_id" = "t2"."id") '
+            'WHERE ("t2"."b_link_id" IN ('
+            'SELECT "t3"."id" FROM "b" AS "t3" '
+            'INNER JOIN "a" AS "t4" ON ("t3"."a_link_id" = "t4"."id") '
+            'WHERE ("t4"."a" = ?)))'), ['a'])
 
     def test_schema(self):
         class WithSchema(TestModel):
@@ -491,6 +584,52 @@ class TestModelSQL(ModelDatabaseTestCase):
             'SELECT "t1"."data" '
             'FROM "huey"."with_schema" AS "t1" '
             'WHERE ("t1"."data" = ?)'), ['zaizee'])
+
+
+@requires_postgresql
+class TestOnConflictSQL(ModelDatabaseTestCase):
+    requires = [Emp, OCTest, UKVP]
+
+    def test_atomic_update(self):
+        query = OCTest.insert(a='foo', b=1).on_conflict(
+            conflict_target=(OCTest.a,),
+            update={OCTest.b: OCTest.b + 2})
+
+        self.assertSQL(query, (
+            'INSERT INTO "oc_test" ("a", "b", "c") VALUES (?, ?, ?) '
+            'ON CONFLICT ("a") '
+            'DO UPDATE SET "b" = ("oc_test"."b" + ?) '
+            'RETURNING "oc_test"."id"'), ['foo', 1, 0, 2])
+
+    def test_update_where_clause(self):
+        # Add a new row with the given "a" value. If a conflict occurs,
+        # re-insert with b=b+2 so long as the original b < 3.
+        query = OCTest.insert(a='foo', b=1).on_conflict(
+            conflict_target=(OCTest.a,),
+            update={OCTest.b: OCTest.b + 2},
+            where=(OCTest.b < 3))
+        self.assertSQL(query, (
+            'INSERT INTO "oc_test" ("a", "b", "c") VALUES (?, ?, ?) '
+            'ON CONFLICT ("a") DO UPDATE SET "b" = ("oc_test"."b" + ?) '
+            'WHERE ("oc_test"."b" < ?) '
+            'RETURNING "oc_test"."id"'), ['foo', 1, 0, 2, 3])
+
+    def test_conflict_target_constraint_where(self):
+        fields = [UKVP.key, UKVP.value, UKVP.extra]
+        data = [('k1', 1, 2), ('k2', 2, 3)]
+
+        query = (UKVP.insert_many(data, fields)
+                 .on_conflict(conflict_target=(UKVP.key, UKVP.value),
+                              conflict_where=(UKVP.extra > 1),
+                              preserve=(UKVP.extra,),
+                              where=(UKVP.key != 'kx')))
+        self.assertSQL(query, (
+            'INSERT INTO "ukvp" ("key", "value", "extra") '
+            'VALUES (?, ?, ?), (?, ?, ?) '
+            'ON CONFLICT ("key", "value") WHERE ("extra" > ?) '
+            'DO UPDATE SET "extra" = EXCLUDED."extra" '
+            'WHERE ("ukvp"."key" != ?) RETURNING "ukvp"."id"'),
+            ['k1', 1, 2, 'k2', 2, 3, 1, 'kx'])
 
 
 class TestStringsForFieldsa(ModelDatabaseTestCase):
@@ -520,7 +659,7 @@ class TestStringsForFieldsa(ModelDatabaseTestCase):
         qliteral = Person.update({'last': 'kitty'}).where(Person.last == 'cat')
         for query in (qkwargs, qliteral):
             self.assertSQL(query, (
-                'UPDATE "person" SET "last" = ? WHERE ("last" = ?)'),
+                'UPDATE "person" SET "last" = ? WHERE ("person"."last" = ?)'),
                 ['kitty', 'cat'])
 
 

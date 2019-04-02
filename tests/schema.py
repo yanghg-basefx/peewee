@@ -1,6 +1,7 @@
 from peewee import *
 from peewee import NodeList
 
+from .base import BaseTestCase
 from .base import get_in_memory_db
 from .base import ModelDatabaseTestCase
 from .base import TestModel
@@ -35,21 +36,6 @@ class TMConstraints(TestModel):
     value = TextField(collation='NOCASE')
 
 
-class NoRowid(TestModel):
-    key = TextField(primary_key=True)
-    value = TextField()
-
-    class Meta:
-        without_rowid = True
-
-
-class NoPK(TestModel):
-    data = TextField()
-
-    class Meta:
-        primary_key = False
-
-
 class CacheData(TestModel):
     key = TextField(unique=True)
     value = TextField()
@@ -76,8 +62,14 @@ Article.add_index(SQL('CREATE INDEX "article_foo" ON "article" ("flags" & 3)'))
 
 class TestModelDDL(ModelDatabaseTestCase):
     database = get_in_memory_db()
-    requires = [Article, Category, Note, Person, Relationship, TMUnique,
-                TMSequence, TMIndexes, TMConstraints, User, CacheData]
+    requires = [Article, CacheData, Category, Note, Person, Relationship,
+                TMUnique, TMSequence, TMIndexes, TMConstraints, User]
+
+    def test_database_required(self):
+        class MissingDB(Model):
+            data = TextField()
+
+        self.assertRaises(ImproperlyConfigured, MissingDB.create_table)
 
     def assertCreateTable(self, model_class, expected):
         sql, params = model_class._schema._create_table(False).query()
@@ -142,6 +134,49 @@ class TestModelDDL(ModelDatabaseTestCase):
              '"name", "timestamp", ("flags" & ?)) '
              'WHERE ("status" = ?)', [4, 1]),
             ('CREATE INDEX "article_foo" ON "article" ("flags" & 3)', []),
+        ])
+
+    def test_model_index_types(self):
+        class Event(TestModel):
+            key = TextField()
+            timestamp = TimestampField(index=True, index_type='BRIN')
+            class Meta:
+                database = self.database
+
+        self.assertIndexes(Event, [
+            ('CREATE INDEX "event_timestamp" ON "event" '
+             'USING BRIN ("timestamp")', [])])
+
+    def test_model_indexes_custom_tablename(self):
+        class KV(TestModel):
+            key = TextField()
+            value = TextField()
+            timestamp = TimestampField(index=True)
+            class Meta:
+                database = self.database
+                indexes = (
+                    (('key', 'value'), True),
+                )
+                table_name = 'kvs'
+
+        self.assertIndexes(KV, [
+            ('CREATE INDEX "kvs_timestamp" ON "kvs" ("timestamp")', []),
+            ('CREATE UNIQUE INDEX "kvs_key_value" ON "kvs" ("key", "value")',
+             [])])
+
+    def test_model_indexes_computed_columns(self):
+        class FuncIdx(TestModel):
+            a = IntegerField()
+            b = IntegerField()
+            class Meta:
+                database = self.database
+
+        i = FuncIdx.index(FuncIdx.a, FuncIdx.b, fn.SUM(FuncIdx.a + FuncIdx.b))
+        FuncIdx.add_index(i)
+
+        self.assertIndexes(FuncIdx, [
+            ('CREATE INDEX "func_idx_a_b" ON "func_idx" '
+             '("a", "b", SUM("a" + "b"))', []),
         ])
 
     def test_model_indexes_complex_columns(self):
@@ -209,12 +244,23 @@ class TestModelDDL(ModelDatabaseTestCase):
             ('CREATE UNIQUE INDEX "foobar2_data" ON "foobar2_tbl" ("data")')])
 
     def test_without_pk(self):
-        NoPK._meta.database = self.database
+        class NoPK(TestModel):
+            data = TextField()
+            class Meta:
+                database = self.database
+                primary_key = False
         self.assertCreateTable(NoPK, [
             ('CREATE TABLE "no_pk" ("data" TEXT NOT NULL)')])
 
     def test_without_rowid(self):
-        NoRowid._meta.database = self.database
+        class NoRowid(TestModel):
+            key = TextField(primary_key=True)
+            value = TextField()
+
+            class Meta:
+                database = self.database
+                without_rowid = True
+
         self.assertCreateTable(NoRowid, [
             ('CREATE TABLE "no_rowid" ('
              '"key" TEXT NOT NULL PRIMARY KEY, '
@@ -227,8 +273,6 @@ class TestModelDDL(ModelDatabaseTestCase):
             ('CREATE TABLE "sub_no_rowid" ('
              '"key" TEXT NOT NULL PRIMARY KEY, '
              '"value" TEXT NOT NULL)')])
-
-        NoRowid._meta.database = None
 
     def test_db_table(self):
         class A(TestModel):
@@ -280,6 +324,59 @@ class TestModelDDL(ModelDatabaseTestCase):
 
         sql, params = User._schema._drop_table(restrict=True).query()
         self.assertEqual(sql, 'DROP TABLE IF EXISTS "users" RESTRICT')
+
+    def test_table_constraints(self):
+        class UKV(TestModel):
+            key = TextField()
+            value = TextField()
+            status = IntegerField()
+            class Meta:
+                constraints = [
+                    SQL('CONSTRAINT ukv_kv_uniq UNIQUE (key, value)'),
+                    Check('status > 0')]
+                database = self.database
+                table_name = 'ukv'
+
+        self.assertCreateTable(UKV, [
+            ('CREATE TABLE "ukv" ('
+             '"id" INTEGER NOT NULL PRIMARY KEY, '
+             '"key" TEXT NOT NULL, '
+             '"value" TEXT NOT NULL, '
+             '"status" INTEGER NOT NULL, '
+             'CONSTRAINT ukv_kv_uniq UNIQUE (key, value), '
+             'CHECK (status > 0))')])
+
+    def test_table_settings(self):
+        class KVSettings(TestModel):
+            key = TextField(primary_key=True)
+            value = TextField()
+            timestamp = TimestampField()
+            class Meta:
+                database = self.database
+                table_settings = ('PARTITION BY RANGE (timestamp)',
+                                  'WITHOUT ROWID')
+        self.assertCreateTable(KVSettings, [
+            ('CREATE TABLE "kv_settings" ('
+             '"key" TEXT NOT NULL PRIMARY KEY, '
+             '"value" TEXT NOT NULL, '
+             '"timestamp" INTEGER NOT NULL) '
+             'PARTITION BY RANGE (timestamp) '
+             'WITHOUT ROWID')])
+
+    def test_table_options(self):
+        class TOpts(TestModel):
+            key = TextField()
+            class Meta:
+                database = self.database
+                options = {
+                    'CHECKSUM': 1,
+                    'COMPRESSION': 'lz4'}
+
+        self.assertCreateTable(TOpts, [
+            ('CREATE TABLE "t_opts" ('
+             '"id" INTEGER NOT NULL PRIMARY KEY, '
+             '"key" TEXT NOT NULL, '
+             'CHECKSUM=1, COMPRESSION=lz4)')])
 
     def test_table_and_index_creation(self):
         self.assertCreateTable(Person, [
@@ -442,6 +539,59 @@ class TestModelDDL(ModelDatabaseTestCase):
             '"fk_language_selected_snippet_id_refs_snippet" '
             'FOREIGN KEY ("selected_snippet_id") REFERENCES "snippet" ("id")'))
 
+        class SnippetComment(TestModel):
+            snippet_long_foreign_key_identifier = ForeignKeyField(Snippet)
+            comment = TextField()
+            class Meta:
+                database = self.database
+
+        sql, params = SnippetComment._schema._create_table(safe=True).query()
+        self.assertEqual(sql, (
+            'CREATE TABLE IF NOT EXISTS "snippet_comment" ('
+            '"id" INTEGER NOT NULL PRIMARY KEY, '
+            '"snippet_long_foreign_key_identifier_id" INTEGER NOT NULL, '
+            '"comment" TEXT NOT NULL, '
+            'FOREIGN KEY ("snippet_long_foreign_key_identifier_id") '
+            'REFERENCES "snippet" ("id"))'))
+
+        sql, params = (SnippetComment._schema
+                       ._create_foreign_key(
+                           SnippetComment.snippet_long_foreign_key_identifier)
+                       .query())
+        self.assertEqual(sql, (
+            'ALTER TABLE "snippet_comment" ADD CONSTRAINT "'
+            'fk_snippet_comment_snippet_long_foreign_key_identifier_i_2a8b87d"'
+            ' FOREIGN KEY ("snippet_long_foreign_key_identifier_id") '
+            'REFERENCES "snippet" ("id")'))
+
+    def test_deferred_foreign_key_inheritance(self):
+        class Base(TestModel):
+            class Meta:
+                database = self.database
+        class WithTimestamp(Base):
+            timestamp = TimestampField()
+        class Tweet(Base):
+            user = DeferredForeignKey('DUser')
+            content = TextField()
+        class TimestampTweet(Tweet, WithTimestamp): pass
+        class DUser(Base):
+            username = TextField()
+
+        sql, params = Tweet._schema._create_table(safe=False).query()
+        self.assertEqual(sql, (
+            'CREATE TABLE "tweet" ('
+            '"id" INTEGER NOT NULL PRIMARY KEY, '
+            '"content" TEXT NOT NULL, '
+            '"user_id" INTEGER NOT NULL)'))
+
+        sql, params = TimestampTweet._schema._create_table(safe=False).query()
+        self.assertEqual(sql, (
+            'CREATE TABLE "timestamp_tweet" ('
+            '"id" INTEGER NOT NULL PRIMARY KEY, '
+            '"timestamp" INTEGER NOT NULL, '
+            '"content" TEXT NOT NULL, '
+            '"user_id" INTEGER NOT NULL)'))
+
     def test_identity_field(self):
         class PG10Identity(TestModel):
             id = IdentityField()
@@ -454,3 +604,20 @@ class TestModelDDL(ModelDatabaseTestCase):
              '"id" INT GENERATED BY DEFAULT AS IDENTITY NOT NULL PRIMARY KEY, '
              '"data" TEXT NOT NULL)'),
         ])
+
+
+class TestModelSetTableName(BaseTestCase):
+    def test_set_table_name(self):
+        class Foo(TestModel):
+            pass
+
+        self.assertEqual(Foo._meta.table_name, 'foo')
+        self.assertEqual(Foo._meta.table.__name__, 'foo')
+
+        # Writing the attribute directly does not update the cached Table name.
+        Foo._meta.table_name = 'foo2'
+        self.assertEqual(Foo._meta.table.__name__, 'foo')
+
+        # Use the helper-method.
+        Foo._meta.set_table_name('foo3')
+        self.assertEqual(Foo._meta.table.__name__, 'foo3')

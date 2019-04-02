@@ -42,6 +42,9 @@ Models
 
 * :py:class:`BaseModel` has been renamed to :py:class:`ModelBase`
 * Accessing raw model data is now done using ``__data__`` instead of ``_data``
+* The ``_prepare_instance()`` Model method has been removed.
+* The ``sqlall()`` method, which output the DDL statements to generate a model
+  and its associated indexes, has been removed.
 
 Fields
 ^^^^^^
@@ -64,6 +67,9 @@ Fields
 Querying
 ^^^^^^^^
 
+``JOIN_INNER``, ``JOIN_LEFT_OUTER``, etc are now ``JOIN.INNER``,
+``JOIN.LEFT_OUTER``, etc.
+
 The C extension that contained implementations of the query result wrappers has
 been removed.
 
@@ -77,6 +83,7 @@ instead use :py:func:`prefetch` to achieve the same result.
 * The ``naive()`` method is now :py:meth:`~BaseQuery.objects`, which defaults
   to using the model class as the constructor, but accepts any callable to use
   as an alternate constructor.
+* The ``annotate()`` query method is no longer supported.
 
 The :py:func:`Case` helper has moved from the ``playhouse.shortcuts`` module
 into the main peewee module.
@@ -86,6 +93,9 @@ a method on all column-like objects.
 
 The ``InsertQuery.return_id_list()`` method has been replaced by a more general
 pattern of using :py:meth:`_WriteQuery.returning`.
+
+The ``InsertQuery.upsert()`` method has been replaced by the more general and
+flexible :py:meth:`Insert.on_conflict` method.
 
 When using :py:func:`prefetch`, the collected instances will be stored in the
 same attribute as the foreign-key's ``backref``. Previously, you would access

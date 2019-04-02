@@ -1,7 +1,5 @@
 .. _api:
 
-.. include:: help-request.rst
-
 API Documentation
 =================
 
@@ -1248,12 +1246,16 @@ Query-builder
 
         Create a ``CAST`` expression.
 
-    .. py:method:: asc()
+    .. py:method:: asc([collation=None[, nulls=None]])
 
+        :param str collation: Collation name to use for sorting.
+        :param str nulls: Sort nulls (FIRST or LAST).
         :returns: an ascending :py:class:`Ordering` object for the column.
 
-    .. py:method:: desc()
+    .. py:method:: desc([collation=None[, nulls=None]])
 
+        :param str collation: Collation name to use for sorting.
+        :param str nulls: Sort nulls (FIRST or LAST).
         :returns: an descending :py:class:`Ordering` object for the column.
 
     .. py:method:: __invert__()
@@ -1328,6 +1330,10 @@ Query-builder
 
     Represent ordering by a column-like object.
 
+    Postgresql supports a non-standard clause ("NULLS FIRST/LAST"). Peewee will
+    automatically use an equivalent ``CASE`` statement for databases that do
+    not support this (Sqlite / MySQL).
+
     .. py:method:: collate([collation=None])
 
         :param str collation: Collation name to use for sorting.
@@ -1380,12 +1386,14 @@ Query-builder
     Represent a CHECK constraint.
 
 
-.. py:class:: Function(name, arguments[, coerce=True])
+.. py:class:: Function(name, arguments[, coerce=True[, python_value=None]])
 
     :param str name: Function name.
     :param tuple arguments: Arguments to function.
     :param bool coerce: Whether to coerce the function result to a particular
         data-type when reading function return values from the cursor.
+    :param callable python_value: Function to use for converting the return
+        value from the cursor.
 
     Represent an arbitrary SQL function call.
 
@@ -1402,7 +1410,7 @@ Query-builder
                  .group_by(User.username)
                  .order_by(fn.COUNT(Tweet.id).desc()))
 
-    .. py:method:: over([partition_by=None[, order_by=None[, start=None[, end=None[, window=None]]]]])
+    .. py:method:: over([partition_by=None[, order_by=None[, start=None[, end=None[, window=None[, exclude=None]]]]]])
 
         :param list partition_by: List of columns to partition by.
         :param list order_by: List of columns / expressions to order window by.
@@ -1410,8 +1418,11 @@ Query-builder
             start of the window range.
         :param end: A :py:class:`SQL` instance or a string expressing the
             end of the window range.
-        :param str frame_type: ``Window.RANGE`` or ``Window.ROWS``.
+        :param str frame_type: ``Window.RANGE``, ``Window.ROWS`` or
+            ``Window.GROUPS``.
         :param Window window: A :py:class:`Window` instance.
+        :param exclude: Frame exclusion, one of ``Window.CURRENT_ROW``,
+            ``Window.GROUP``, ``Window.TIES`` or ``Window.NO_OTHERS``.
 
         .. note::
             For an in-depth guide to using window functions with Peewee,
@@ -1457,7 +1468,41 @@ Query-builder
 
     .. py:method:: coerce([coerce=True])
 
-        :param bool coerce: Whether to coerce function-call result.
+        :param bool coerce: Whether to attempt to coerce function-call result
+            to a Python data-type.
+
+        When coerce is ``True``, the target data-type is inferred using several
+        heuristics. Read the source for ``BaseModelCursorWrapper._initialize_columns``
+        method to see how this works.
+
+    .. py:method:: python_value([func=None])
+
+        :param callable python_value: Function to use for converting the return
+            value from the cursor.
+
+        Specify a particular function to use when converting values returned by
+        the database cursor. For example:
+
+        .. code-block:: python
+
+            # Get user and a list of their tweet IDs. The tweet IDs are
+            # returned as a comma-separated string by the db, so we'll split
+            # the result string and convert the values to python ints.
+            tweet_ids = (fn
+                         .GROUP_CONCAT(Tweet.id)
+                         .python_value(lambda idlist: [int(i) for i in idlist]))
+
+            query = (User
+                     .select(User.username, tweet_ids.alias('tweet_ids'))
+                     .group_by(User.username))
+
+            for user in query:
+                print(user.username, user.tweet_ids)
+
+            # e.g.,
+            # huey [1, 4, 5, 7]
+            # mickey [2, 3, 6]
+            # zaizee []
 
 .. py:function:: fn()
 
@@ -1491,7 +1536,7 @@ Query-builder
         # Get users whose username begins with "A" or "a":
         a_users = User.select().where(fn.LOWER(fn.SUBSTR(User.username, 1, 1)) == 'a')
 
-.. py:class:: Window([partition_by=None[, order_by=None[, start=None[, end=None[, frame_type=None[, alias=None]]]]]])
+.. py:class:: Window([partition_by=None[, order_by=None[, start=None[, end=None[, frame_type=None[, extends=None[, exclude=None[, alias=None]]]]]]]])
 
     :param list partition_by: List of columns to partition by.
     :param list order_by: List of columns to order by.
@@ -1499,7 +1544,12 @@ Query-builder
         of the window range.
     :param end: A :py:class:`SQL` instance or a string expressing the end of
         the window range.
-    :param str frame_type: ``Window.RANGE`` or ``Window.ROWS``.
+    :param str frame_type: ``Window.RANGE``, ``Window.ROWS`` or
+        ``Window.GROUPS``.
+    :param extends: A :py:class:`Window` definition to extend. Alternately, you
+        may specify the window's alias instead.
+    :param exclude: Frame exclusion, one of ``Window.CURRENT_ROW``,
+        ``Window.GROUP``, ``Window.TIES`` or ``Window.NO_OTHERS``.
     :param str alias: Alias for the window.
 
     Represent a WINDOW clause.
@@ -1508,19 +1558,22 @@ Query-builder
         For an in-depth guide to using window functions with Peewee,
         see the :ref:`window-functions` section.
 
+    .. py:attribute:: RANGE
+    .. py:attribute:: ROWS
+    .. py:attribute:: GROUPS
+
+        Specify the window ``frame_type``. See :ref:`window-frame-types`.
+
     .. py:attribute:: CURRENT_ROW
 
-        Reference to current row for use in start/end clause.
+        Reference to current row for use in start/end clause or the frame
+        exclusion parameter.
 
-    .. py:attribute:: RANGE
+    .. py:attribute:: NO_OTHERS
+    .. py:attribute:: GROUP
+    .. py:attribute:: TIES
 
-        Specify the use of *RANGE* for the window ``frame_type``. For more
-        information, see :ref:`window-frame-types`.
-
-    .. py:attribute:: ROWS
-
-        Specify the use of *ROWS* for the window ``frame_type``. For more
-        information, see :ref:`window-frame-types`.
+        Specify the window frame exclusion parameter.
 
     .. py:staticmethod:: preceding([value=None])
 
@@ -1535,6 +1588,22 @@ Query-builder
 
         Convenience method for generating SQL suitable for passing in as the
         ``end`` parameter for a window range.
+
+    .. py:method:: as_rows()
+    .. py:method:: as_range()
+    .. py:method:: as_groups()
+
+        Specify the frame type.
+
+    .. py:method:: extends([window=None])
+
+        :param Window window: A :py:class:`Window` definition to extend.
+            Alternately, you may specify the window's alias instead.
+
+    .. py:method:: exclude([frame_exclusion=None])
+
+        :param frame_exclusion: Frame exclusion, one of ``Window.CURRENT_ROW``,
+            ``Window.GROUP``, ``Window.TIES`` or ``Window.NO_OTHERS``.
 
     .. py:method:: alias([alias=None])
 
@@ -1619,16 +1688,20 @@ Query-builder
 
 .. py:class:: Tuple(*args)
 
-    Represent a SQL row tuple.
+    Represent a SQL `row value <https://www.sqlite.org/rowvalue.html>`_.
+    Row-values are supported by most databases.
 
 
-.. py:class:: OnConflict([action=None[, update=None[, preserve=None[, where=None[, conflict_target=None]]]]])
+.. py:class:: OnConflict([action=None[, update=None[, preserve=None[, where=None[, conflict_target=None[, conflict_where=None[, conflict_constraint=None]]]]]]])
 
     :param str action: Action to take when resolving conflict.
     :param update: A dictionary mapping column to new value.
-    :param preserve: A list of columns whose values should be preserved from the original INSERT.
+    :param preserve: A list of columns whose values should be preserved from the original INSERT. See also :py:class:`EXCLUDED`.
     :param where: Expression to restrict the conflict resolution.
-    :param conflict_target: Name of column or constraint to check.
+    :param conflict_target: Column(s) that comprise the constraint.
+    :param conflict_where: Expressions needed to match the constraint target if it is a partial index (index with a WHERE clause).
+    :param str conflict_constraint: Name of constraint to use for conflict
+        resolution. Currently only supported by Postgres.
 
     Represent a conflict resolution clause for a data-modification query.
 
@@ -1654,8 +1727,55 @@ Query-builder
 
     .. py:method:: conflict_target(*constraints)
 
-        :param constraints: Name(s) of columns/constraints that are the target
-            of the conflict resolution.
+        :param constraints: Column(s) to use as target for conflict resolution.
+
+    .. py:method:: conflict_where(*expressions)
+
+        :param expressions: Expressions that match the conflict target index,
+            in the case the conflict target is a partial index.
+
+    .. py:method:: conflict_constraint(constraint)
+
+        :param str constraint: Name of constraints to use as target for
+            conflict resolution. Currently only supported by Postgres.
+
+
+.. py:class:: EXCLUDED
+
+    Helper object that exposes the ``EXCLUDED`` namespace that is used with
+    ``INSERT ... ON CONFLICT`` to reference values in the conflicting data.
+    This is a "magic" helper, such that one uses it by accessing attributes on
+    it that correspond to a particular column.
+
+    Example:
+
+    .. code-block:: python
+
+        class KV(Model):
+            key = CharField(unique=True)
+            value = IntegerField()
+
+        # Create one row.
+        KV.create(key='k1', value=1)
+
+        # Demonstrate usage of EXCLUDED.
+        # Here we will attempt to insert a new value for a given key. If that
+        # key already exists, then we will update its value with the *sum* of its
+        # original value and the value we attempted to insert -- provided that
+        # the new value is larger than the original value.
+        query = (KV.insert(key='k1', value=10)
+                 .on_conflict(conflict_target=[KV.key],
+                              update={KV.value: KV.value + EXCLUDED.value},
+                              where=(EXCLUDED.value > KV.value)))
+
+        # Executing the above query will result in the following data being
+        # present in the "kv" table:
+        # (key='k1', value=11)
+        query.execute()
+
+        # If we attempted to execute the query *again*, then nothing would be
+        # updated, as the new value (10) is now less than the value in the
+        # original row (11).
 
 
 .. py:class:: BaseQuery()
@@ -1820,6 +1940,16 @@ Query-builder
             :py:meth:`~Query.where` calls are chainable.  Multiple calls will
             be "AND"-ed together.
 
+    .. py:method:: orwhere(*expressions)
+
+        :param expressions: zero or more expressions to include in the WHERE
+            clause.
+
+        Include the given expressions in the WHERE clause of the query. This
+        method is the same as the :py:meth:`Query.where` method, except that
+        the expressions will be OR-ed together with any previously-specified
+        WHERE expressions.
+
     .. py:method:: order_by(*values)
 
         :param values: zero or more Column-like objects to order by.
@@ -1902,6 +2032,56 @@ Query-builder
                 print(category.name, category.level)
 
         For more examples of CTEs, see :ref:`cte`.
+
+    .. py:method:: select_from(*columns)
+
+        :param columns: one or more columns to select from the inner query.
+        :return: a new query that wraps the calling query.
+
+        Create a new query that wraps the current (calling) query. For example,
+        suppose you have a simple ``UNION`` query, and need to apply an
+        aggregation on the union result-set. To do this, you need to write
+        something like:
+
+        .. code-block:: sql
+
+            SELECT "u"."owner", COUNT("u"."id") AS "ct"
+            FROM (
+                SELECT "id", "owner", ... FROM "cars"
+                UNION
+                SELECT "id", "owner", ... FROM "motorcycles"
+                UNION
+                SELECT "id", "owner", ... FROM "boats") AS "u"
+            GROUP BY "u"."owner"
+
+        The :py:meth:`~SelectQuery.select_from` method is designed to simplify
+        constructing this type of query.
+
+        Example peewee code:
+
+        .. code-block:: python
+
+              class Car(Model):
+                  owner = ForeignKeyField(Owner, backref='cars')
+                  # ... car-specific fields, etc ...
+
+              class Motorcycle(Model):
+                  owner = ForeignKeyField(Owner, backref='motorcycles')
+                  # ... motorcycle-specific fields, etc ...
+
+              class Boat(Model):
+                  owner = ForeignKeyField(Owner, backref='boats')
+                  # ... boat-specific fields, etc ...
+
+              cars = Car.select(Car.owner)
+              motorcycles = Motorcycle.select(Motorcycle.owner)
+              boats = Boat.select(Boat.owner)
+
+              union = cars | motorcycles | boats
+
+              query = (union
+                       .select_from(union.c.owner, fn.COUNT(union.c.id))
+                       .group_by(union.c.owner))
 
     .. py:method:: union_all(dest)
 
@@ -2273,9 +2453,9 @@ Query-builder
             # Here we'll update the "is_admin" status of the above users,
             # "joining" the VALUES() on the "username" column.
             query = (User
-                     .update(is_admin=QualifiedNames(vl.c.is_admin))
+                     .update(is_admin=vl.c.is_admin)
                      .from_(vl)
-                     .where(QualifiedNames(User.username == vl.c.username)))
+                     .where(User.username == vl.c.username))
 
         The above query produces the following SQL:
 
@@ -2286,14 +2466,6 @@ Query-builder
                 VALUES ('huey', t), ('mickey', f), ('zaizee', t))
                 AS "vl"("username", "is_admin")
             WHERE ("users"."username" = "vl"."username")
-
-        .. note::
-            Note the usage of :py:class:`QualifiedNames`, which wraps the
-            "is_admin" value in the assignment portion of the query, and which
-            wraps both tables in the join condition. Ordinarily,
-            fully-qualified names are not supported in UPDATE queries, so we
-            must explicitly tell Peewee that we wish to use qualified names
-            when using the UPDATE ... FROM syntax.
 
 
 .. py:class:: Insert(table[, insert=None[, columns=None[, on_conflict=None[, **kwargs]]]])
@@ -2317,19 +2489,22 @@ Query-builder
 
         Specify REPLACE conflict resolution strategy.
 
-    .. py:method:: on_conflict([action=None[, update=None[, preserve=None[, where=None[, conflict_target=None]]]]])
+    .. py:method:: on_conflict([action=None[, update=None[, preserve=None[, where=None[, conflict_target=None[, conflict_where=None[, conflict_constraint=None]]]]]]])
 
         :param str action: Action to take when resolving conflict. If blank,
             action is assumed to be "update".
         :param update: A dictionary mapping column to new value.
         :param preserve: A list of columns whose values should be preserved from the original INSERT.
         :param where: Expression to restrict the conflict resolution.
-        :param conflict_target: Name of column or constraint to check.
+        :param conflict_target: Column(s) that comprise the constraint.
+        :param conflict_where: Expressions needed to match the constraint target if it is a partial index (index with a WHERE clause).
+        :param str conflict_constraint: Name of constraint to use for conflict
+            resolution. Currently only supported by Postgres.
 
         Specify the parameters for an :py:class:`OnConflict` clause to use for
         conflict resolution.
 
-        Example:
+        Examples:
 
         .. code-block:: python
 
@@ -2353,6 +2528,36 @@ Query-builder
                               update={User.login_count: User.login_count + 1})
                           .execute())
                 return userid
+
+        Example using the special :py:class:`EXCLUDED` namespace:
+
+        .. code-block:: python
+
+            class KV(Model):
+                key = CharField(unique=True)
+                value = IntegerField()
+
+            # Create one row.
+            KV.create(key='k1', value=1)
+
+            # Demonstrate usage of EXCLUDED.
+            # Here we will attempt to insert a new value for a given key. If that
+            # key already exists, then we will update its value with the *sum* of its
+            # original value and the value we attempted to insert -- provided that
+            # the new value is larger than the original value.
+            query = (KV.insert(key='k1', value=10)
+                     .on_conflict(conflict_target=[KV.key],
+                                  update={KV.value: KV.value + EXCLUDED.value},
+                                  where=(EXCLUDED.value > KV.value)))
+
+            # Executing the above query will result in the following data being
+            # present in the "kv" table:
+            # (key='k1', value=11)
+            query.execute()
+
+            # If we attempted to execute the query *again*, then nothing would be
+            # updated, as the new value (10) is now less than the value in the
+            # original row (11).
 
 
 .. py:class:: Delete()
@@ -2395,7 +2600,7 @@ Query-builder
     :param bool unique: Whether index is UNIQUE.
     :param bool safe: Whether to add IF NOT EXISTS clause.
     :param Expression where: Optional WHERE clause for index.
-    :param str using: Index algorithm.
+    :param str using: Index algorithm or type, e.g. 'BRIN', 'GiST' or 'GIN'.
     :param str name: Optional index name.
 
     Expressive method for declaring an index on a model.
@@ -2447,7 +2652,7 @@ Query-builder
 Fields
 ------
 
-.. py:class:: Field([null=False[, index=False[, unique=False[, column_name=None[, default=None[, primary_key=False[, constraints=None[, sequence=None[, collation=None[, unindexed=False[, choices=None[, help_text=None[, verbose_name=None]]]]]]]]]]]]])
+.. py:class:: Field([null=False[, index=False[, unique=False[, column_name=None[, default=None[, primary_key=False[, constraints=None[, sequence=None[, collation=None[, unindexed=False[, choices=None[, help_text=None[, verbose_name=None[, index_type=None]]]]]]]]]]]]]])
 
     :param bool null: Field allows NULLs.
     :param bool index: Create an index on field.
@@ -2465,6 +2670,7 @@ Fields
         displaying a dropdown of choices for field values, for example.
     :param str help_text: Help-text for field, metadata purposes only.
     :param str verbose_name: Verbose name for field, metadata purposes only.
+    :param str index_type: Specify index type (postgres only), e.g. 'BRIN'.
 
     Fields on a :py:class:`Model` are analogous to columns on a table.
 
@@ -2893,7 +3099,8 @@ Fields
         self-referential foreign key.
     :param Field field: Field to reference on ``model`` (default is primary
         key).
-    :param str backref: Accessor name for back-reference.
+    :param str backref: Accessor name for back-reference, or "+" to disable
+        the back-reference accessor.
     :param str on_delete: ON DELETE action, e.g. ``'CASCADE'``..
     :param str on_update: ON UPDATE action.
     :param str deferrable: Control when constraint is enforced, e.g. ``'INITIALLY DEFERRED'``.
@@ -2964,13 +3171,44 @@ Fields
     ``Husband.wife`` is automatically resolved and turned into a regular
     :py:class:`ForeignKeyField`.
 
-.. py:class:: ManyToManyField(model[, backref=None[, through_model=None]])
+    .. warning::
+        :py:class:`DeferredForeignKey` references are resolved when model
+        classes are declared and created. This means that if you declare a
+        :py:class:`DeferredForeignKey` to a model class that has already been
+        imported and created, the deferred foreign key instance will never be
+        resolved. For example:
+
+        .. code-block:: python
+
+            class User(Model):
+                username = TextField()
+
+            class Tweet(Model):
+                # This will never actually be resolved, because the User
+                # model has already been declared.
+                user = DeferredForeignKey('user', backref='tweets')
+                content = TextField()
+
+        In cases like these you should use the regular
+        :py:class:`ForeignKeyField` *or* you can manually resolve deferred
+        foreign keys like so:
+
+        .. code-block:: python
+
+            # Tweet.user will be resolved into a ForeignKeyField:
+            DeferredForeignKey.resolve(User)
+
+.. py:class:: ManyToManyField(model[, backref=None[, through_model=None[, on_delete=None[, on_update=None]]]])
 
     :param Model model: Model to create relationship with.
     :param str backref: Accessor name for back-reference
     :param Model through_model: :py:class:`Model` to use for the intermediary
         table. If not provided, a simple through table will be automatically
         created.
+    :param str on_delete: ON DELETE action, e.g. ``'CASCADE'``. Will be used
+        for foreign-keys in through model.
+    :param str on_update: ON UPDATE action. Will be used for foreign-keys in
+        through model.
 
     The :py:class:`ManyToManyField` provides a simple interface for working
     with many-to-many relationships, inspired by Django. A many-to-many
@@ -3355,7 +3593,7 @@ Schema Manager
 Model
 -----
 
-.. py:class:: Metadata(model[, database=None[, table_name=None[, indexes=None[, primary_key=None[, constraints=None[, schema=None[, only_save_dirty=False[, table_alias=None[, depends_on=None[, options=None[, without_rowid=False[, **kwargs]]]]]]]]]]]])
+.. py:class:: Metadata(model[, database=None[, table_name=None[, indexes=None[, primary_key=None[, constraints=None[, schema=None[, only_save_dirty=False[, depends_on=None[, options=None[, without_rowid=False[, **kwargs]]]]]]]]]]]])
 
     :param Model model: Model class.
     :param Database database: database model is bound to.
@@ -3367,7 +3605,6 @@ Model
     :param str schema: Schema table exists in.
     :param bool only_save_dirty: When :py:meth:`~Model.save` is called, only
         save the fields which have been modified.
-    :param str table_alias: Specify preferred alias for table in queries.
     :param dict options: Arbitrary options for the model.
     :param bool without_rowid: Specify WITHOUT ROWID (sqlite only).
     :param kwargs: Arbitrary setting attributes and values.
@@ -3391,6 +3628,27 @@ Model
 
         Traverse the model graph and return a list of 3-tuples, consisting of
         ``(foreign key field, model class, is_backref)``.
+
+    .. py:method:: set_database(database)
+
+        :param Database database: database object to bind Model to.
+
+        Bind the model class to the given :py:class:`Database` instance.
+
+        .. warning::
+            This API should not need to be used. Instead, to change a
+            :py:class:`Model` database at run-time, use one of the following:
+
+            * :py:meth:`Model.bind`
+            * :py:meth:`Model.bind_ctx` (bind for scope of a context manager).
+            * :py:meth:`Database.bind`
+            * :py:meth:`Database.bind_ctx`
+
+    .. py:method:: set_table_name(table_name)
+
+        :param str table_name: table name to bind Model to.
+
+        Bind the model class to the given table name at run-time.
 
 
 .. py:class:: SubclassAwareMetadata
@@ -3769,6 +4027,49 @@ Model
               clause).
             * SQLite generally has a limit of 999 bound parameters for a query,
               so the batch size should be roughly 1000 / number-of-fields.
+            * When a batch-size is provided it is **strongly recommended** that
+              you wrap the call in a transaction or savepoint using
+              :py:meth:`Database.atomic`. Otherwise an error in a batch mid-way
+              through could leave the database in an inconsistent state.
+
+    .. py:classmethod:: bulk_update(model_list, fields[, batch_size=None])
+
+        :param iterable model_list: a list or other iterable of
+            :py:class:`Model` instances.
+        :param list fields: list of fields to update.
+        :param int batch_size: number of rows to batch per insert. If
+            unspecified, all models will be inserted in a single query.
+        :returns: total number of rows updated.
+
+        Efficiently UPDATE multiple model instances.
+
+        Example:
+
+        .. code-block:: python
+
+            # First, create 3 users.
+            u1, u2, u3 = [User.create(username='u%s' % i) for i in (1, 2, 3)]
+
+            # Now let's modify their usernames.
+            u1.username = 'u1-x'
+            u2.username = 'u2-y'
+            u3.username = 'u3-z'
+
+            # Update all three rows using a single UPDATE query.
+            User.bulk_update([u1, u2, u3], fields=[User.username])
+
+        If you have a large number of objects to update, it is strongly
+        recommended that you specify a ``batch_size`` and wrap the operation in
+        a transaction:
+
+        .. code-block:: python
+
+            with database.atomic():
+                User.bulk_update(user_list, fields=['username'], batch_size=50)
+
+        .. warning::
+
+            * SQLite generally has a limit of 999 bound parameters for a query.
             * When a batch-size is provided it is **strongly recommended** that
               you wrap the call in a transaction or savepoint using
               :py:meth:`Database.atomic`. Otherwise an error in a batch mid-way
@@ -4256,6 +4557,7 @@ Model
 
         :param subqueries: A list of :py:class:`Model` classes or select
             queries to prefetch.
+        :returns: a list of models with selected relations prefetched.
 
         Execute the query, prefetching the given additional resources.
 
@@ -4278,6 +4580,7 @@ Model
     :param sq: Query to use as starting-point.
     :param subqueries: One or more models or :py:class:`ModelSelect` queries
         to eagerly fetch.
+    :returns: a list of models with selected relations prefetched.
 
     Eagerly fetch related objects, allowing efficient querying of multiple
     tables when a 1-to-many relationship exists.

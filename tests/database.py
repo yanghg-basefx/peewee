@@ -147,6 +147,24 @@ class TestDatabase(DatabaseTestCase):
         conn = self.database.connection()
         self.assertFalse(self.database.is_closed())
 
+    def test_db_context_manager(self):
+        self.database.close()
+        self.assertTrue(self.database.is_closed())
+
+        with self.database:
+            self.assertFalse(self.database.is_closed())
+
+        self.assertTrue(self.database.is_closed())
+        self.database.connect()
+        self.assertFalse(self.database.is_closed())
+
+        # Enter context with an already-open db.
+        with self.database:
+            self.assertFalse(self.database.is_closed())
+
+        # Closed after exit.
+        self.assertTrue(self.database.is_closed())
+
     def test_connection_initialization(self):
         state = {'count': 0}
         class TestDatabase(SqliteDatabase):
@@ -252,6 +270,28 @@ class TestDatabase(DatabaseTestCase):
         assertBatches(12, 11, 2)
         assertBatches(12, 12, 1)
         assertBatches(12, 13, 1)
+
+    def test_server_version(self):
+        class FakeDatabase(Database):
+            server_version = None
+            def _connect(self):
+                return 1
+            def _close(self, conn):
+                pass
+            def _set_server_version(self, conn):
+                self.server_version = (1, 33, 7)
+
+        db = FakeDatabase(':memory:')
+        self.assertTrue(db.server_version is None)
+        db.connect()
+        self.assertEqual(db.server_version, (1, 33, 7))
+        db.close()
+        self.assertEqual(db.server_version, (1, 33, 7))
+
+        db.server_version = (1, 2, 3)
+        db.connect()
+        self.assertEqual(db.server_version, (1, 2, 3))
+        db.close()
 
 
 class TestThreadSafety(ModelTestCase):
@@ -481,8 +521,8 @@ class TestIntrospection(ModelTestCase):
                                       'WHERE status = 9 ORDER BY id DESC')
             try:
                 views = self.database.get_views()
-                self.assertEqual([normalize_view_meta(v) for v in views],
-                                 expected)
+                normalized = sorted([normalize_view_meta(v) for v in views])
+                self.assertEqual(normalized, expected)
 
                 # Ensure that we can use get_columns to introspect views.
                 columns = self.database.get_columns('notes_deleted')
@@ -598,6 +638,29 @@ class TestDBProxy(BaseTestCase):
         self.assertFalse(User._meta.database.is_closed())
         self.assertFalse(Tweet._meta.database.is_closed())
         sqlite_db.close()
+
+    def test_proxy_decorator(self):
+        db = DatabaseProxy()
+
+        @db.connection_context()
+        def with_connection():
+            self.assertFalse(db.is_closed())
+
+        @db.atomic()
+        def with_transaction():
+            self.assertTrue(db.in_transaction())
+
+        @db.manual_commit()
+        def with_manual_commit():
+            self.assertTrue(db.in_transaction())
+
+        db.initialize(SqliteDatabase(':memory:'))
+        with_connection()
+        self.assertTrue(db.is_closed())
+        with_transaction()
+        self.assertFalse(db.in_transaction())
+        with_manual_commit()
+        self.assertFalse(db.in_transaction())
 
 
 class Data(TestModel):

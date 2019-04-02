@@ -1,10 +1,15 @@
+import operator
+
 from peewee import *
 from playhouse.shortcuts import *
 
+from .base import DatabaseTestCase
 from .base import ModelTestCase
 from .base import TestModel
+from .base import db_loader
 from .base import get_in_memory_db
 from .base import requires_models
+from .base import requires_mysql
 from .base_models import Category
 
 
@@ -41,6 +46,33 @@ class Gallery(TestModel):
     owner = ForeignKeyField(Owner, backref='galleries')
 
 GalleryLabel = Gallery.labels.through_model
+
+class Student(TestModel):
+    name = TextField()
+
+StudentCourseProxy = DeferredThroughModel()
+
+class Course(TestModel):
+    name = TextField()
+    students = ManyToManyField(Student, through_model=StudentCourseProxy,
+                               backref='courses')
+
+class StudentCourse(TestModel):
+    student = ForeignKeyField(Student)
+    course = ForeignKeyField(Course)
+
+StudentCourseProxy.set_model(StudentCourse)
+
+class Host(TestModel):
+    name = TextField()
+
+class Service(TestModel):
+    host = ForeignKeyField(Host, backref='services')
+    name = TextField()
+
+class Device(TestModel):
+    host = ForeignKeyField(Host, backref='+')
+    name = TextField()
 
 
 class TestModelToDict(ModelTestCase):
@@ -190,6 +222,55 @@ class TestModelToDict(ModelTestCase):
                 'labels': [{'id': 1, 'label': 'nuggie'},
                            {'id': 3, 'label': 'huey'}],
             }])
+
+    @requires_models(Student, Course, StudentCourse)
+    def test_manytomany_deferred(self):
+        data = (
+            ('s1', ('ca', 'cb', 'cc')),
+            ('s2', ('cb', 'cd')),
+            ('s3', ()))
+        c = {}
+        for student, courses in data:
+            s = Student.create(name=student)
+            for course in courses:
+                if course not in c:
+                    c[course] = Course.create(name=course)
+                StudentCourse.create(student=s, course=c[course])
+
+        query = Student.select().order_by(Student.name)
+        data = []
+        for user in query:
+            user_dict = model_to_dict(user, manytomany=True)
+            user_dict['courses'].sort(key=operator.itemgetter('id'))
+            data.append(user_dict)
+
+        self.assertEqual(data, [
+            {'id': 1, 'name': 's1', 'courses': [
+                {'id': 1, 'name': 'ca'},
+                {'id': 2, 'name': 'cb'},
+                {'id': 3, 'name': 'cc'}]},
+            {'id': 2, 'name': 's2', 'courses': [
+                {'id': 2, 'name': 'cb'},
+                {'id': 4, 'name': 'cd'}]},
+            {'id': 3, 'name': 's3', 'courses': []}])
+
+        query = Course.select().order_by(Course.name)
+        data = []
+        for course in query:
+            course_dict = model_to_dict(course, manytomany=True)
+            course_dict['students'].sort(key=operator.itemgetter('id'))
+            data.append(course_dict)
+
+        self.assertEqual(data, [
+            {'id': 1, 'name': 'ca', 'students': [
+                {'id': 1, 'name': 's1'}]},
+            {'id': 2, 'name': 'cb', 'students': [
+                {'id': 1, 'name': 's1'},
+                {'id': 2, 'name': 's2'}]},
+            {'id': 3, 'name': 'cc', 'students': [
+                {'id': 1, 'name': 's1'}]},
+            {'id': 4, 'name': 'cd', 'students': [
+                {'id': 2, 'name': 's2'}]}])
 
     def test_recurse_max_depth(self):
         t0, t1, t2 = [Tweet.create(user=self.user, content='t%s' % i)
@@ -353,6 +434,20 @@ class TestModelToDict(ModelTestCase):
                 {'content': '1'},
                 {'content': '2'}]})
 
+    @requires_models(Host, Service, Device)
+    def test_model_to_dict_disabled_backref(self):
+        host = Host.create(name='pi')
+        Device.create(host=host, name='raspberry pi')
+        Service.create(host=host, name='ssh')
+        Service.create(host=host, name='vpn')
+
+        data = model_to_dict(host, recurse=True, backrefs=True)
+        services = sorted(data.pop('services'), key=operator.itemgetter('id'))
+        self.assertEqual(data, {'id': 1, 'name': 'pi'})
+        self.assertEqual(services, [
+            {'id': 1, 'name': 'ssh'},
+            {'id': 2, 'name': 'vpn'}])
+
 
 class TestDictToModel(ModelTestCase):
     database = get_in_memory_db()
@@ -438,3 +533,52 @@ class TestDictToModel(ModelTestCase):
 
         inst = dict_to_model(User, data, ignore_unknown=True)
         self.assertEqual(inst.xx, 'does not exist')
+
+
+class ReconnectMySQLDatabase(ReconnectMixin, MySQLDatabase):
+    def cursor(self, commit):
+        cursor = super(ReconnectMySQLDatabase, self).cursor(commit)
+
+        # The first (0th) query fails, as do all queries after the 2nd (1st).
+        if self._query_counter != 1:
+            def _fake_execute(self, _):
+                raise OperationalError('2006')
+            cursor.execute = _fake_execute
+        self._query_counter += 1
+        return cursor
+
+    def close(self):
+        self._close_counter += 1
+        return super(ReconnectMySQLDatabase, self).close()
+
+    def _reset_mock(self):
+        self._close_counter = 0
+        self._query_counter = 0
+
+
+@requires_mysql
+class TestReconnectMixin(DatabaseTestCase):
+    database = db_loader('mysql', db_class=ReconnectMySQLDatabase)
+
+    def test_reconnect_mixin(self):
+        # Verify initial state.
+        self.database._reset_mock()
+        self.assertEqual(self.database._close_counter, 0)
+
+        sql = 'select 1 + 1'
+        curs = self.database.execute_sql(sql)
+        self.assertEqual(curs.fetchone(), (2,))
+        self.assertEqual(self.database._close_counter, 1)
+
+        # Due to how we configured our mock, our queries are now failing and we
+        # can verify a reconnect is occuring *AND* the exception is propagated.
+        self.assertRaises(OperationalError, self.database.execute_sql, sql)
+        self.assertEqual(self.database._close_counter, 2)
+
+        # We reset the mock counters. The first query we execute will fail. The
+        # second query will succeed (which happens automatically, thanks to the
+        # retry logic).
+        self.database._reset_mock()
+        curs = self.database.execute_sql(sql)
+        self.assertEqual(curs.fetchone(), (2,))
+        self.assertEqual(self.database._close_counter, 1)

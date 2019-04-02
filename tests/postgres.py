@@ -334,14 +334,15 @@ class TestArrayFieldConvertValues(ModelTestCase):
     database = db
     requires = [ArrayTSModel]
 
+    def dt(self, day, hour=0, minute=0, second=0):
+        return datetime.datetime(2018, 1, day, hour, minute, second)
+
     def test_value_conversion(self):
-        def dt(day, hour=0, minute=0, second=0):
-            return datetime.datetime(2018, 1, day, hour, minute, second)
 
         data = {
-            'k1': [dt(1), dt(2), dt(3)],
+            'k1': [self.dt(1), self.dt(2), self.dt(3)],
             'k2': [],
-            'k3': [dt(4, 5, 6, 7), dt(10, 11, 12, 13)],
+            'k3': [self.dt(4, 5, 6, 7), self.dt(10, 11, 12, 13)],
         }
         for key in sorted(data):
             ArrayTSModel.create(key=key, timestamps=data[key])
@@ -351,14 +352,37 @@ class TestArrayFieldConvertValues(ModelTestCase):
             self.assertEqual(am.timestamps, data[key])
 
         # Perform lookup using timestamp values.
-        ts = ArrayTSModel.get(ArrayTSModel.timestamps.contains(dt(3)))
+        ts = ArrayTSModel.get(ArrayTSModel.timestamps.contains(self.dt(3)))
         self.assertEqual(ts.key, 'k1')
 
-        ts = ArrayTSModel.get(ArrayTSModel.timestamps.contains(dt(4, 5, 6, 7)))
+        ts = ArrayTSModel.get(
+            ArrayTSModel.timestamps.contains(self.dt(4, 5, 6, 7)))
         self.assertEqual(ts.key, 'k3')
 
         self.assertRaises(ArrayTSModel.DoesNotExist, ArrayTSModel.get,
-                          ArrayTSModel.timestamps.contains(dt(4, 5, 6)))
+                          ArrayTSModel.timestamps.contains(self.dt(4, 5, 6)))
+
+    def test_get_with_array_values(self):
+        a1 = ArrayTSModel.create(key='k1', timestamps=[self.dt(1)])
+        a2 = ArrayTSModel.create(key='k2', timestamps=[self.dt(2), self.dt(3)])
+
+        query = (ArrayTSModel
+                 .select()
+                 .where(ArrayTSModel.timestamps == [self.dt(1)]))
+        a1_db = query.get()
+        self.assertEqual(a1_db.id, a1.id)
+
+        query = (ArrayTSModel
+                 .select()
+                 .where(ArrayTSModel.timestamps == [self.dt(2), self.dt(3)]))
+        a2_db = query.get()
+        self.assertEqual(a2_db.id, a2.id)
+
+        a1_db = ArrayTSModel.get(timestamps=[self.dt(1)])
+        self.assertEqual(a1_db.id, a1.id)
+
+        a2_db = ArrayTSModel.get(timestamps=[self.dt(2), self.dt(3)])
+        self.assertEqual(a2_db.id, a2.id)
 
 
 class TestArrayUUIDField(ModelTestCase):
@@ -436,6 +460,13 @@ class TestTSVectorField(ModelTestCase):
         self.assertMessages(M('faith & things'), [2, 4])
         self.assertMessages(M('god | things'), [1, 2, 4])
         self.assertMessages(M('god & things'), [])
+
+        # Using the plain parser we cannot express "OR", but individual term
+        # match works like we expect and multi-term is AND-ed together.
+        self.assertMessages(M('god | things', plain=True), [])
+        self.assertMessages(M('god', plain=True), [1])
+        self.assertMessages(M('thing', plain=True), [2, 4])
+        self.assertMessages(M('faith things', plain=True), [2, 4])
 
 
 class BaseJsonFieldTestCase(object):
@@ -588,6 +619,10 @@ def pg93():
     with db:
         return db.connection().server_version >= 90300
 
+def pg10():
+    with db:
+        return db.connection().server_version >= 100000
+
 JSON_SUPPORT = (JsonModel is not None) and pg93()
 
 
@@ -730,6 +765,75 @@ class TestBinaryJsonField(BaseJsonFieldTestCase, ModelTestCase):
         self.assertObjects(D.contains_all('k1', 'k2', 'k3'), 0)
         self.assertObjects(D.contains_all('k1', 'k2', 'k3', 'k4'))
 
+        # Has key.
+        self.assertObjects(D.has_key('a1'), 1, 2)
+        self.assertObjects(D.has_key('k1'), 0, 5)
+        self.assertObjects(D.has_key('k4'), 2, 5)
+        self.assertObjects(D.has_key('a3'))
+
+        self.assertObjects(D['k3'].has_key('k4'), 0)
+        self.assertObjects(D['k4'].has_key('i2'), 2)
+
+    @skip_unless(pg10(), 'jsonb remove support requires pg >= 10')
+    def test_remove_data(self):
+        BJson.delete().execute()  # Clear out db.
+        BJson.create(data={
+            'k1': 'v1',
+            'k2': 'v2',
+            'k3': {'x1': 'z1', 'x2': 'z2'},
+            'k4': [0, 1, 2]})
+
+        def assertData(exp_list, expected_data):
+            query = BJson.select(BJson.data.remove(*exp_list)).tuples()
+            data = query[:][0][0]
+            self.assertEqual(data, expected_data)
+
+        D = BJson.data
+        assertData(['k3'], {'k1': 'v1', 'k2': 'v2', 'k4': [0, 1, 2]})
+        assertData(['k1', 'k3'], {'k2': 'v2', 'k4': [0, 1, 2]})
+        assertData(['k1', 'kx', 'ky', 'k3'], {'k2': 'v2', 'k4': [0, 1, 2]})
+        assertData(['k4', 'k3'], {'k1': 'v1', 'k2': 'v2'})
+
+    def test_concat_data(self):
+        BJson.delete().execute()
+        BJson.create(data={'k1': {'x1': 'y1'}, 'k2': 'v2', 'k3': [0, 1]})
+
+        def assertData(exp, expected_data):
+            query = BJson.select(BJson.data.concat(exp)).tuples()
+            data = query[:][0][0]
+            self.assertEqual(data, expected_data)
+
+        D = BJson.data
+        assertData({'k2': 'v2-x', 'k1': {'x2': 'y2'}, 'k4': 'v4'}, {
+            'k1': {'x2': 'y2'},  # NB: not merged/patched!!
+            'k2': 'v2-x',
+            'k3': [0, 1],
+            'k4': 'v4'})
+        assertData({'k1': 'v1-x', 'k3': [2, 3, 4], 'k4': {'x4': 'y4'}}, {
+            'k1': 'v1-x',
+            'k2': 'v2',
+            'k3': [2, 3, 4],
+            'k4': {'x4': 'y4'}})
+
+        # We can update sub-keys.
+        query = BJson.select(BJson.data['k1'].concat({'x2': 'y2', 'x3': 'y3'}))
+        self.assertEqual(query.tuples()[0][0],
+                         {'x1': 'y1', 'x2': 'y2', 'x3': 'y3'})
+
+        # Concat can be used to extend JSON arrays.
+        query = BJson.select(BJson.data['k3'].concat([2, 3]))
+        self.assertEqual(query.tuples()[0][0], [0, 1, 2, 3])
+
+    def test_update_data_inplace(self):
+        BJson.delete().execute()
+        b = BJson.create(data={'k1': {'x1': 'y1'}, 'k2': 'v2'})
+
+        BJson.update(data=BJson.data.concat({
+            'k1': {'x2': 'y2'},
+            'k3': 'v3'})).execute()
+        b2 = BJson.get(BJson.id == b.id)
+        self.assertEqual(b2.data, {'k1': {'x2': 'y2'}, 'k2': 'v2', 'k3': 'v3'})
+
     def test_integer_index_weirdness(self):
         self._create_test_data()
 
@@ -770,6 +874,30 @@ class TestBinaryJsonField(BaseJsonFieldTestCase, ModelTestCase):
             (5, 7),
             ('k4', None)])
 
+    def test_conflict_update(self):
+        b1 = BJson.create(data={'k1': 'v1'})
+        iq = (BJson
+              .insert(id=b1.id, data={'k1': 'v1-x'})
+              .on_conflict('update', conflict_target=[BJson.id],
+                           update={BJson.data: {'k1': 'v1-z'}}))
+        b1_id_db = iq.execute()
+        self.assertEqual(b1.id, b1_id_db)
+
+        b1_db = BJson.get(BJson.id == b1.id)
+        self.assertEqual(BJson.data, {'k1': 'v1-z'})
+
+        iq = (BJson
+              .insert(id=b1.id, data={'k1': 'v1-y'})
+              .on_conflict('update', conflict_target=[BJson.id],
+                           update={'data': {'k1': 'v1-w'}}))
+        b1_id_db = iq.execute()
+        self.assertEqual(b1.id, b1_id_db)
+
+        b1_db = BJson.get(BJson.id == b1.id)
+        self.assertEqual(BJson.data, {'k1': 'v1-w'})
+
+        self.assertEqual(BJson.select().count(), 1)
+
 
 class TestIntervalField(ModelTestCase):
     database = db
@@ -794,7 +922,7 @@ class TestIntervalField(ModelTestCase):
 class TestIndexedField(BaseTestCase):
     def test_indexed_field_ddl(self):
         class FakeIndexedField(IndexedFieldMixin, CharField):
-            index_type = 'FAKE'
+            default_index_type = 'GiST'
 
         class IndexedModel(TestModel):
             array_index = ArrayField(CharField)
